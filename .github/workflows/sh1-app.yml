@@ -86,50 +86,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --quiet pillow
-          $test = @'
-          import subprocess, sys, json, time, os, threading
-          exe = os.path.abspath("publish/plugins/sh1/Lively.Player.Sh1.exe")
-          wpdir = os.path.abspath("bundle/wallpapers/sh1-wallpaper").replace("\\", "\")
-          if not os.path.exists(exe): print("FATAL: player exe missing"); sys.exit(1)
-          args = [exe, "--wallpaper-path", wpdir,
-                  "--wallpaper-scene", "THRF9FD",
-                  "--wallpaper-type", "sh1"]
-          p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
-                               cwd=os.path.dirname(exe))
-          seen = {"hwnd": False, "loaded": False, "scene": False, "close": False}
-          def reader():
-              for line in p.stdout:
-                  line = line.strip()
-                  if not line.startswith("{"): continue
-                  try: obj = json.loads(line)
-                  except Exception: continue
-                  if obj.get("Type") == 0 and obj.get("Hwnd", 0) > 0: seen["hwnd"] = True
-                  if obj.get("Type") == 2 and obj.get("Success") is True: seen["loaded"] = True
-                  if obj.get("Type") == 1 and "scene" in str(obj.get("Message","")): seen["scene"] = True
-          t = threading.Thread(target=reader, daemon=True); t.start()
-          deadline = time.time() + 120
-          while not seen["loaded"] and time.time() < deadline:
-              time.sleep(0.2)
-          if not seen["loaded"]:
-              print("FATAL: msg_wploaded never arrived"); p.kill(); sys.exit(1)
-          # LIVE property changes: scene switch, suspend, resume, close
-          p.stdin.write('{"Type":14,"Name":"scene","Value":33}\n'); p.stdin.flush()  # SU0203
-          time.sleep(4)
-          p.stdin.write('{"Type":7}\n'); p.stdin.flush()      # suspend
-          time.sleep(2)
-          p.stdin.write('{"Type":8}\n'); p.stdin.flush()      # resume
-          time.sleep(2)
-          p.stdin.write('{"Type":5}\n'); p.stdin.flush()      # close
-          rc = p.wait(timeout=30)
-          time.sleep(1)
-          print("handshake:", seen)
-          ok = seen["hwnd"] and seen["loaded"] and rc in (0, None)
-          print("PLAYER IPC TEST:", "PASS" if ok else "FAIL", "| exit:", rc)
-          sys.exit(0 if ok else 1)
-          '@
-          $test | Out-File -FilePath ipc_test.py -Encoding utf8
-          python ipc_test.py
+          python tools/sh1_ipc_test.py
           if ($LASTEXITCODE -ne 0) { throw "IPC TEST FAILED" }
 
       - name: Regression gates (the engine renders + moves + the water flows)
