@@ -43,7 +43,7 @@ p = subprocess.Popen(
     args,
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
-    stderr=subprocess.DEVNULL,
+    stderr=subprocess.PIPE,
     text=True,
     encoding="utf-8",
     cwd=os.path.dirname(EXE),
@@ -72,8 +72,14 @@ def reader():
                 seen["scene_switch"] = True
 
 
+stderr_lines = []
+def err_reader():
+    for line in p.stderr:
+        stderr_lines.append(line.rstrip())
+
 t = threading.Thread(target=reader, daemon=True)
-t.start()
+te = threading.Thread(target=err_reader, daemon=True)
+t.start(); te.start()
 
 deadline = time.time() + 180  # the engine boots + renders the first frame
 while not seen["loaded"] and time.time() < deadline and p.poll() is None:
@@ -81,6 +87,9 @@ while not seen["loaded"] and time.time() < deadline and p.poll() is None:
 
 if not seen["loaded"]:
     print("FATAL: msg_wploaded never arrived")
+    print("--- player stderr (engine boot log) ---")
+    for l in stderr_lines[:40]:
+        print(l)
     p.kill()
     sys.exit(1)
 
