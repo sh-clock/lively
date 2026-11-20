@@ -16584,8 +16584,27 @@ int main(int argc, char **argv) {
 #ifdef LIVELY_PLAYER
         /* S17: the --wallpaper-* family is consumed by the LIVELY block
          * below — the strict parser must not fatal on them (this was the
-         * v1.0.0 on-Windows instant-death: "unknown arg: --wallpaper-path") */
-        else if (!strncmp(a, "--wallpaper-", 12)) { continue; }
+         * v1.0.0 on-Windows instant-death: "unknown arg: --wallpaper-path").
+         * The VALUE argument after each flag must be skipped too, else the
+         * next iteration treats the bare path itself as an unknown arg.  */
+        else if (!strncmp(a, "--wallpaper-", 12)) {
+            /* flags that carry a value (the boolean ones take none) */
+            if (!strcmp(a, "--wallpaper-path") ||
+                !strcmp(a, "--wallpaper-scene") ||
+                !strcmp(a, "--wallpaper-property") ||
+                !strcmp(a, "--wallpaper-display") ||
+                !strcmp(a, "--wallpaper-geometry") ||
+                !strcmp(a, "--wallpaper-type") ||
+                !strcmp(a, "--wallpaper-debug-port") ||
+                !strcmp(a, "--wallpaper-user-data") ||
+                !strcmp(a, "--wallpaper-audio-id") ||
+                !strcmp(a, "--wallpaper-color-scheme") ||
+                !strcmp(a, "--wallpaper-pause-media") ||
+                !strcmp(a, "--wallpaper-volume")) {
+                if (i + 1 < argc) i++;   /* skip the value */
+            }
+            continue;
+        }
 #endif
         else { fprintf(stderr, "unknown arg: %s (try --help)\n", a); return 1; }
     }
