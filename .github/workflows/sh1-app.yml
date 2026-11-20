@@ -62,9 +62,7 @@ jobs:
         run: |
           # Reference assemblies so net472 builds without the Windows SDK targeting pack
           dotnet build src/Lively/Lively.Utility.Watchdog/Lively.Utility.Watchdog.csproj `
-            -c Release -p:EnableWindowsTargeting=true `
-            -p:PackageReference="Microsoft.NETFramework.ReferenceAssemblies;1.0.3" `
-            --nologo -v q
+            -c Release -p:EnableWindowsTargeting=true --nologo -v q
           New-Item -ItemType Directory -Force -Path publish/Plugins/Watchdog | Out-Null
           Copy-Item src/Lively/Lively.Utility.Watchdog/bin/Release/Lively.Utility.Watchdog.exe `
             publish/Plugins/Watchdog/Lively.Watchdog
