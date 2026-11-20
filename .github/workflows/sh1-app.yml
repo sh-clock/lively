@@ -65,6 +65,7 @@ jobs:
           Copy-Item bundle/wallpapers/1.zip publish/bundle/wallpapers/
 
       - name: Regression gates (the engine renders + moves + the water flows)
+        shell: pwsh
         run: |
           # plain-mode gates on the same engine source (no LIVELY_PLAYER define):
           zig cc -target x86_64-windows-gnu -O2 -std=c99 `
@@ -85,26 +86,8 @@ jobs:
               --camdat bundle/wallpapers/sh1-wallpaper/sh1/camdat.json `
               --input bundle/wallpapers/sh1-wallpaper/sh1 `
               --shot t=6,file=w1.png --shot t=6.2,file=w2.png
-          python - <<'EOF'
-          from PIL import Image
-          import os
-          # gate1: non-blank
-          im = Image.open('wp_a.png').convert('L'); h = im.histogram()
-          r = sum(h[33:]) / sum(h)
-          print('gate1 render non-black:', round(r, 4))
-          assert r > 0.05, 'BLANK RENDER'
-          def diff(a, b):
-              ia = Image.open(a).convert('RGB'); ib = Image.open(b).convert('RGB')
-              pa, pb = ia.load(), ib.load()
-              return sum(1 for x in range(ia.size[0]) for y in range(ia.size[1]) if pa[x,y] != pb[x,y])
-          d2 = diff('shots/s1.png', 'shots/s2.png')
-          print('gate2 SU0203 motion px:', d2)
-          assert d2 > 500, 'FROZEN ANIMATION'
-          d3 = diff('shots/w1.png', 'shots/w2.png')
-          print('gate3 SUFFFE water px:', d3)
-          assert d3 > 300, 'STILL WATER'
-          print('ALL GATES PASS')
-          EOF
+          python -m pip install --quiet pillow
+          python tools/sh1_gates.py bundle/wallpapers/sh1-wallpaper
 
       - name: Package the app ZIP
         run: |
