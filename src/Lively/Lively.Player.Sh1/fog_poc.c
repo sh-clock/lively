@@ -16581,20 +16581,22 @@ int main(int argc, char **argv) {
                    "  | H HUD toggle (live pair/fog/flashlight readout)\n");
             return 0;
         }
+#ifdef LIVELY_PLAYER
+        /* S17: the --wallpaper-* family is consumed by the LIVELY block
+         * below — the strict parser must not fatal on them (this was the
+         * v1.0.0 on-Windows instant-death: "unknown arg: --wallpaper-path") */
+        else if (!strncmp(a, "--wallpaper-", 12)) { continue; }
+#endif
         else { fprintf(stderr, "unknown arg: %s (try --help)\n", a); return 1; }
     }
 
 #ifdef LIVELY_PLAYER
     /* ---- the Lively Wallpaper player contract (the C# players' args) ---
-     * --wallpaper-path       the wallpaper FOLDER (LivelyInfo.json dir)
-     * --wallpaper-scene      the boot GLB name (the scene dropdown value)
-     * --wallpaper-property   LivelyProperties.json path (SaveData copy)
-     * --wallpaper-display    display device (accepted; lively sizes us)
-     * --wallpaper-geometry   WxH (accepted; win32_present follows the
-     *                         actual client rect — WorkerW re-parenting
-     *                         sets the real bounds after msg_hwnd)
-     * Only the first three matter to the engine; the rest are accepted
-     * for contract parity (unknown args must not fatal).                 */
+     * S17 ROOT-CAUSE FIX: this block ran AFTER the strict arg loop, whose
+     * `unknown arg` tail rejects --wallpaper-* and EXITS 1 — the player
+     * died instantly on real launches ("unknown arg: --wallpaper-path").
+     * The strict loop now skips the lively family when LIVELY_PLAYER is
+     * defined; this block is where they are consumed.                       */
     {
         for (int i = 1; i < argc; i++) {
             const char *a = argv[i];
