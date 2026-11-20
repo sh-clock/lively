@@ -42,9 +42,6 @@ jobs:
           Get-Item Lively.Player.Sh1.exe | Select-Object Length
           zig version
 
-      - name: Linux syntax gate (both modes compile clean)
-        if: false   # the windows runner compiles the exe; the linux gates run below via WSL-free re-check
-        run: echo skipped
 
       - name: Build the Lively app (with the sh1 integration)
         run: |
@@ -62,7 +59,7 @@ jobs:
           Copy-Item Lively.Player.Sh1.exe publish/plugins/sh1/
           # the bundled wallpaper auto-installs into the user library on first boot
           New-Item -ItemType Directory -Force -Path publish/bundle/wallpapers | Out-Null
-          Copy-Item bundle/wallpapers/1.zip publish/bundle/wallpapers/
+          Copy-Item bundle/wallpapers/2.zip publish/bundle/wallpapers/
 
       - name: Regression gates (the engine renders + moves + the water flows)
         shell: pwsh

@@ -89,6 +89,7 @@ namespace Lively.Core.Wallpapers
 
             process = new Process
             {
+                EnableRaisingEvents = true,   /* audit B-D1: Exited fires only with this */
                 StartInfo = new ProcessStartInfo
                 {
                     Arguments = cmdArgs.ToString(),
@@ -202,6 +203,7 @@ namespace Lively.Core.Wallpapers
             }
             IsExited = true;
             contentReadyTcs.TrySetResult();
+            try { process?.Dispose(); } catch { }   /* audit B-D3 */
             Exited?.Invoke(this, EventArgs.Empty);
         }
 
@@ -297,11 +299,16 @@ namespace Lively.Core.Wallpapers
 
         public Task ScreenCapture(string filePath)
         {
-            throw new NotImplementedException();
+            /* audit B-D2: the desktop-auto-wallpaper path calls this on
+             * load; a throw logs errors on every wallpaper change. The
+             * native player has no screenshot IPC yet (follow-up: a
+             * msg_screenshot round-trip like WebWebView2). */
+            return Task.CompletedTask;
         }
 
         public void Dispose()
         {
+            Terminate();   /* audit B-D3: Dispose must kill a hung player */
             process?.Dispose();
             GC.SuppressFinalize(this);
         }

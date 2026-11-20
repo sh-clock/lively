@@ -15599,7 +15599,10 @@ static int lp_json_int(const char *j, const char *key) {
     if (!p) return -1;
     p += strlen(pat);
     while (*p == ' ' || *p == '\t') p++;
-    return (int)strtol(p, NULL, 10);
+    if (*p == '"' || *p == '{' || *p == '[' || *p == 0) return -1;
+    char *e = NULL;
+    long v = strtol(p, &e, 10);
+    return (e == p) ? -1 : (int)v;   /* audit A-D2: "DR0000" -> -1, not 0 */
 }
 static int lp_json_bool(const char *j, const char *key, int dflt) {
     char pat[64]; snprintf(pat, sizeof(pat), "\"%s\":", key);
@@ -15641,8 +15644,9 @@ static const char *g_lp_scenes[] = {
 /* -- IPC OUT (stdout = the wire; chatter is silenced) ------------------ */
 static void lp_ipc(const char *json) {
     if (!json || !*json) return;
-    fputs(json, stdout);
-    fputc('\n', stdout);
+    char line[576];
+    snprintf(line, sizeof(line), "%s\n", json);
+    fputs(line, stdout);   /* audit A-D7: one write, no interleaving */
     fflush(stdout);
 }
 static void lp_send_hwnd(HWND hwnd) {
@@ -15844,12 +15848,18 @@ static void lp_apply_props(LiveApp *A) {
         /* the boot pair is re-derived from the GLB/camdat exactly like the
          * boot path: the simplest verbatim route is live_apply_preset on
          * the room's own SH1X env indices when present */
-        if (A->R.sc && A->R.sc->sh1x.hasEnv)
-            live_apply_preset(A, A->R.sc->sh1x.envIdx1, "lively envpair=camdat");
+        int a = -1, b = -1;
+        if (((Camdat *)A->cd)->hasEnv && ((Camdat *)A->cd)->envPair0 >= 0) {
+            a = ((Camdat *)A->cd)->envPair0; b = ((Camdat *)A->cd)->envPair1;
+        } else if (A->R.sc && ((Scene *)A->R.sc)->sh1x.hasEnv) {
+            a = ((Scene *)A->R.sc)->sh1x.envIdx0;
+            b = ((Scene *)A->R.sc)->sh1x.envIdx1;
+        }
+        if (a >= 0 && b >= 0) sh_env_set_pair(&A->env, a, b); /* audit A-D3: the authored PAIR */
         g_lp_prop_pair0 = -1;
-    } else if (g_lp_prop_pair0 >= 0) {
-        live_apply_preset(A, g_lp_prop_pair0, "lively envpair"); /* Gfx_MapEnvSet */
-        g_lp_prop_pair0 = -1;
+    } else if (g_lp_prop_pair0 >= 0 && g_lp_prop_pair1 >= 0) {
+        sh_env_set_pair(&A->env, g_lp_prop_pair0, g_lp_prop_pair1); /* audit A-D1: the PAIR, not (idx,idx) */
+        g_lp_prop_pair0 = -1; g_lp_prop_pair1 = -1;
     }
 }
 
@@ -15891,6 +15901,7 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                               NULL, NULL, wc.hInstance, NULL);
     if (!hwnd) {
         lp_send_console(1, "CreateWindow failed");
+        lp_send_loaded(0);   /* audit A-D9: unblock the app's wait */
         return 0;
     }
     g_lp_hwnd = hwnd;
@@ -15920,12 +15931,18 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
         if (g_lp_scene_reload && g_lp_scene_new[0]) {
             g_lp_scene_reload = 0;
             char path[512];
-            snprintf(path, sizeof(path), "%s\\%s.glb",
+            snprintf(path, sizeof(path), "%s\\sh1\\%s.glb",
                      lpInput ? lpInput : ".", g_lp_scene_new);
+            if (!file_exists(path))
+                snprintf(path, sizeof(path), "%s\\%s.glb",
+                         lpInput ? lpInput : ".", g_lp_scene_new);
             Scene nsc;
             if (scene_load_glb(&nsc, path)) {
                 Camdat ncd;
-                if (camdat_load(&ncd, lpCamdat ? lpCamdat : "camdat.json",
+                if (camdat_load(&ncd,
+                                (g_lp_camdat_path && g_lp_camdat_path[0])
+                                    ? g_lp_camdat_path
+                                    : (lpCamdat ? lpCamdat : "camdat.json"),
                                 path)) {
                     /* swap under the same discipline the boot path uses */
                     scene_free((Scene *)A->R.sc);
@@ -15937,6 +15954,21 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                     A->play.speed = 1.0;
                     sh1x_anims_reset((Sh1x *)&((Scene *)A->R.sc)->sh1x);
                     turn_init(&A->play.turn);
+                    A->tickPending = 0;               /* audit A-D6 */
+                    {
+                        Scene *ns = (Scene *)A->R.sc; Camdat *nc = (Camdat *)A->cd;
+                        int a = -1, b = -1;
+                        if (nc->hasEnv && nc->envPair0 >= 0) { a = nc->envPair0; b = nc->envPair1; }
+                        else if (ns->sh1x.hasEnv) { a = ns->sh1x.envIdx0; b = ns->sh1x.envIdx1; }
+                        if (a >= 0 && b >= 0) sh_env_set_pair(&A->env, a, b);
+                        if (ns->sh1x.hasEnv && ns->sh1x.envField17 >= 0 &&
+                            ns->sh1x.envField17 != 2) {
+                            particle_environment_set(&A->snow, ns->sh1x.envField17, 1);
+                            A->snow.snowTypeEnable = 1; A->snow.transitionLock = 1;
+                            snow_reset(&A->snow);
+                        }
+                        A->R.snow = A->snow.enabled ? &A->snow : NULL;
+                    }
                     lp_send_console(0, "scene switched");
                 } else {
                     scene_free(&nsc);
@@ -15959,6 +15991,8 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
             Sleep(50);
             lp_apply_props(A);   /* property changes still apply + repaint */
             CamPose cp = live_current_pose(A);
+            A->R.snow = A->snow.enabled ? &A->snow : NULL;   /* audit A-D8 */
+            sh_env_sync_live(&A->env, A->play.t, cp.pos, cp.q, 0);
             render_frame(&A->fb, &A->R, &cp);
             fb_to_argb(&A->fb, A->argb);
             win32_present(hwnd, A);
@@ -16664,6 +16698,7 @@ int main(int argc, char **argv) {
             if (file_exists(p)) camdatPath = strdup(p);
             if (!inputDir) inputDir = g_lp_input_dir;
         }
+        if (camdatPath) g_lp_camdat_path = camdatPath;  /* audit A-D4 */
     }
 #endif /* LIVELY_PLAYER */
 
