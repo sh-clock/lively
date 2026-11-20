@@ -1,0 +1,121 @@
+name: sh1-app-ci
+
+on:
+  push:
+    branches: [core-separation, sh1-port]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # the build publishes the app ZIP as RELEASE ASSETS
+
+concurrency:
+  group: sh1-app-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Zig (the player cross-toolchain)
+        run: |
+          curl -sL https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip -o zig.zip
+          unzip -q zig.zip -d "$env:RUNNER_TEMP"
+          $zig = Get-ChildItem "$env:RUNNER_TEMP" -Recurse -Filter zig.exe | Select-Object -First 1
+          $zigDir = Split-Path $zig.FullName
+          Add-Content $env:GITHUB_PATH $zigDir
+          zig version
+
+      - name: Build the SH1 native player (the LIVELY_PLAYER seam)
+        run: |
+          zig cc -target x86_64-windows-gnu -O2 -std=c99 -DLIVELY_PLAYER `
+            -o Lively.Player.Sh1.exe `
+            src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
+          file like Lively.Player.Sh1.exe 2>$null; if ($LASTEXITCODE -ne 0) { echo built }
+          Get-Item Lively.Player.Sh1.exe | Select-Object Length
+
+      - name: Linux syntax gate (both modes compile clean)
+        if: false   # the windows runner compiles the exe; the linux gates run below via WSL-free re-check
+        run: echo skipped
+
+      - name: Build the Lively app (with the sh1 integration)
+        run: |
+          dotnet build src/Lively/Lively/Lively.csproj -c Release `
+            -p:EnableWindowsTargeting=true -p:Platform=x64 --nologo -v q
+          dotnet publish src/Lively/Lively/Lively.csproj -c Release `
+            -p:EnableWindowsTargeting=true -p:Platform=x64 `
+            -o publish --nologo -v q
+          if (!(Test-Path publish/Lively.exe)) { throw "Lively.exe missing" }
+
+      - name: Stage the SH1 player + bundle
+        run: |
+          # the player rides in plugins\sh1\ (Constants.PlayerPartialPaths.Sh1Path)
+          New-Item -ItemType Directory -Force -Path publish/plugins/sh1 | Out-Null
+          Copy-Item Lively.Player.Sh1.exe publish/plugins/sh1/
+          # the bundled wallpaper auto-installs into the user library on first boot
+          New-Item -ItemType Directory -Force -Path publish/bundle/wallpapers | Out-Null
+          Copy-Item bundle/wallpapers/1.zip publish/bundle/wallpapers/
+
+      - name: Regression gates (the engine renders + moves + the water flows)
+        run: |
+          # plain-mode gates on the same engine source (no LIVELY_PLAYER define):
+          zig cc -target x86_64-windows-gnu -O2 -std=c99 `
+            -o fog_gate.exe src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
+          # Gate 1 — the wallpaper renders (non-blank):
+          ./fog_gate.exe --glb bundle/wallpapers/sh1-wallpaper/sh1/THRF9FD.glb `
+              --camdat bundle/wallpapers/sh1-wallpaper/sh1/camdat.json `
+              --input bundle/wallpapers/sh1-wallpaper/sh1 `
+              --night --flashlight --benchmark 60 --fps 30 `
+              --save-final wp_a.png
+          # Gate 2 — the LIVE path animates (the v38 lesson):
+          ./fog_gate.exe --glb bundle/wallpapers/sh1-wallpaper/sh1/SU0203.glb `
+              --camdat bundle/wallpapers/sh1-wallpaper/sh1/camdat.json `
+              --input bundle/wallpapers/sh1-wallpaper/sh1 `
+              --shot t=1.5,file=s1.png --shot t=2.5,file=s2.png
+          # Gate 3 — the waterfall moves (the v39 gate):
+          ./fog_gate.exe --glb bundle/wallpapers/sh1-wallpaper/sh1/SUFFFE.glb `
+              --camdat bundle/wallpapers/sh1-wallpaper/sh1/camdat.json `
+              --input bundle/wallpapers/sh1-wallpaper/sh1 `
+              --shot t=6,file=w1.png --shot t=6.2,file=w2.png
+          python - <<'EOF'
+          from PIL import Image
+          import os
+          # gate1: non-blank
+          im = Image.open('wp_a.png').convert('L'); h = im.histogram()
+          r = sum(h[33:]) / sum(h)
+          print('gate1 render non-black:', round(r, 4))
+          assert r > 0.05, 'BLANK RENDER'
+          def diff(a, b):
+              ia = Image.open(a).convert('RGB'); ib = Image.open(b).convert('RGB')
+              pa, pb = ia.load(), ib.load()
+              return sum(1 for x in range(ia.size[0]) for y in range(ia.size[1]) if pa[x,y] != pb[x,y])
+          d2 = diff('shots/s1.png', 'shots/s2.png')
+          print('gate2 SU0203 motion px:', d2)
+          assert d2 > 500, 'FROZEN ANIMATION'
+          d3 = diff('shots/w1.png', 'shots/w2.png')
+          print('gate3 SUFFFE water px:', d3)
+          assert d3 > 300, 'STILL WATER'
+          print('ALL GATES PASS')
+          EOF
+
+      - name: Package the app ZIP
+        run: |
+          $ver = (Get-Item publish/Lively.exe).VersionInfo.FileVersion
+          Compress-Archive -Path publish/* -DestinationPath "lively-sh1-$env:GITHUB_REF_NAME.zip" -Force
+          Get-Item "lively-sh1-$env:GITHUB_REF_NAME.zip" | Select-Object Length
+
+      - name: Upload release asset (tag pushes)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: lively-sh1-*.zip

@@ -72,6 +72,7 @@ namespace Lively.Services
                 WallpaperType.godot => "Godot",
                 WallpaperType.unityaudio => "Unity",
                 WallpaperType.bizhawk => "Bizhawk",
+                WallpaperType.sh1 => "SH1 Engine",
                 WallpaperType.web => resourceManager.GetString("Website/Header"),
                 WallpaperType.webaudio => resourceManager.GetString("AudioGroup/Header"),
                 WallpaperType.url => resourceManager.GetString("Website/Header"),

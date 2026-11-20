@@ -35,6 +35,7 @@ namespace Lively.UI.WinUI.Services
                 WallpaperType.godot => "Godot",
                 WallpaperType.unityaudio => "Unity",
                 WallpaperType.bizhawk => "Bizhawk",
+                WallpaperType.sh1 => "SH1 Engine",
                 WallpaperType.web => resourceLoader.GetString("Website/Header"),
                 WallpaperType.webaudio => resourceLoader.GetString("AudioGroup/Header"),
                 WallpaperType.url => resourceLoader.GetString("Website/Header"),

@@ -1,0 +1,12 @@
+{
+  "Title": "Silent Hill — Fog Engine",
+  "Type": "sh1",
+  "FileName": "Lively.Player.Sh1.exe",
+  "Arguments": "",
+  "Desc": "The Silent Hill 1 fog engine (silent-hill-decomp-accurate) as a live wallpaper: engine-exact volumetric fog, snow/rain particles, the 21 env presets, Harry's flashlight, SH1X propAnims (fans, doors, TVs, ferris wheel, the school waterfall). 44 scenes; the Customise panel switches them LIVE.",
+  "Author": "sh-clock",
+  "License": "GPL-3.0 (code); scene data (C) Konami, non-commercial",
+  "Contact": "https://github.com/sh-clock",
+  "Thumbnail": "preview.png",
+  "Version": 1
+}

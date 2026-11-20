@@ -153,6 +153,19 @@ namespace Lively.Factories
                             return new VideoWmfProcess(model.FilePath, model, display, 0, userSettings.Settings.WallpaperScaling);
                     }
                     break;
+                case WallpaperType.sh1:
+                    if (PackageUtil.IsRunningAsPackaged)
+                    {
+                        throw new MsixNotAllowedException("Program wallpaper on MSIX package not allowed.");
+                    }
+                    else
+                    {
+                        return new Sh1Wallpaper(model.FilePath,
+                                model,
+                                display,
+                                lpFactory.CreateLivelyPropertyFolder(model, display, arrangement, userSettings),
+                                model.LivelyInfo.Arguments);
+                    }
                 case WallpaperType.app:
                 case WallpaperType.bizhawk:
                 case WallpaperType.unity:

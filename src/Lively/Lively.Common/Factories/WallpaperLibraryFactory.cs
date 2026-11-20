@@ -201,6 +201,7 @@ namespace Lively.Common.Factories
                 case WallpaperType.bizhawk:
                 case WallpaperType.unity:
                 case WallpaperType.godot:
+                case WallpaperType.sh1:
                     {
                         // Copy the entire directory containing the file.
                         var sourceDir = Path.GetDirectoryName(metadata.FileName);
