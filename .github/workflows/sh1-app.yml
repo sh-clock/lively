@@ -28,19 +28,19 @@ jobs:
       - name: Setup Zig (the player cross-toolchain)
         run: |
           curl -sL https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip -o zig.zip
-          unzip -q zig.zip -d "$env:RUNNER_TEMP"
+          Expand-Archive -Path zig.zip -DestinationPath "$env:RUNNER_TEMP" -Force
           $zig = Get-ChildItem "$env:RUNNER_TEMP" -Recurse -Filter zig.exe | Select-Object -First 1
           $zigDir = Split-Path $zig.FullName
           Add-Content $env:GITHUB_PATH $zigDir
-          zig version
+          echo "zig staged at: $zigDir"
 
       - name: Build the SH1 native player (the LIVELY_PLAYER seam)
         run: |
           zig cc -target x86_64-windows-gnu -O2 -std=c99 -DLIVELY_PLAYER `
             -o Lively.Player.Sh1.exe `
             src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
-          file like Lively.Player.Sh1.exe 2>$null; if ($LASTEXITCODE -ne 0) { echo built }
           Get-Item Lively.Player.Sh1.exe | Select-Object Length
+          zig version
 
       - name: Linux syntax gate (both modes compile clean)
         if: false   # the windows runner compiles the exe; the linux gates run below via WSL-free re-check
