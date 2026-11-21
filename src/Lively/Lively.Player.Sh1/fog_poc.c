@@ -15929,6 +15929,7 @@ static void lp_reload_props_live(void) {
         v = lp_json_value_int(txt, "fps");
     if (v >= 1 && v <= 240) g_lp_fps_cap = v;
     /* the env pair: "camdat" (or index 0) = revert to the authored env   */
+    char ack_env[32] = {0};   /* echoed in the ack (audit R3-D2)        */
     {
         char envp[32] = {0};
         int envRead = lp_json_str(txt, "envpair", envp, sizeof(envp));
@@ -15977,7 +15978,19 @@ static void lp_reload_props_live(void) {
     }
     free(txt);
     fclose(pf);
-    lp_send_console(0, "defaults reloaded from LivelyProperties.json");
+    /* audit R3-D2: the ack echoes the values actually staged so the wire
+     * carries an OBSERVABLE of every slot (scene/env/checkboxes/fps) —
+     * a revert that stages only the scene cannot pass silently.       */
+    {
+        char ack[256];
+        snprintf(ack, sizeof(ack),
+                 "defaults reloaded (scene=%s fog=%d snow=%d dither=%d "
+                 "wobble=%d flashlight=%d fps=%d env=%s)",
+                 g_lp_scene_new, g_lp_prop_fog, g_lp_prop_snow,
+                 g_lp_prop_dither, g_lp_prop_wobble, g_lp_prop_flashlight,
+                 g_lp_fps_cap, ack_env[0] ? ack_env : "-");
+        lp_send_console(0, ack);
+    }
 }
 
 /* -- IPC IN: the stdin command thread ---------------------------------- */
@@ -16276,7 +16289,13 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                         }
                         A->R.snow = A->snow.enabled ? &A->snow : NULL;
                     }
-                    lp_send_console(0, "scene switched");
+                    {   /* audit R3-D1: carry the ROOM so a wrong-index
+                         * regression cannot pass as a bare success      */
+                        char sm[128];
+                        snprintf(sm, sizeof(sm), "scene switched: %s",
+                                 g_lp_scene_new);
+                        lp_send_console(0, sm);
+                    }
                 } else {
                     scene_free(&nsc);
                     lp_send_console(1, "camdat re-bind failed");
