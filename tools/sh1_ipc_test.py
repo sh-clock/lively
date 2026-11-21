@@ -71,7 +71,8 @@ p = subprocess.Popen(
     cwd=os.path.dirname(EXE),
 )
 
-seen = {"hwnd": None, "loaded": False, "scene_switch": False, "console": []}
+seen = {"hwnd": None, "loaded": False, "scene_switch": False, "console": [],
+       "defaults_reloaded": False, "scene_switch_count": 0}
 
 
 def reader():
@@ -89,9 +90,13 @@ def reader():
         elif t == 2 and obj.get("Success") is True:
             seen["loaded"] = True
         elif t == 1:
-            seen["console"].append(str(obj.get("Message", "")))
-            if "scene switched" in str(obj.get("Message", "")):
+            msg = str(obj.get("Message", ""))
+            seen["console"].append(msg)
+            if "scene switched" in msg:
                 seen["scene_switch"] = True
+                seen["scene_switch_count"] += 1
+            if "defaults reloaded" in msg:
+                seen["defaults_reloaded"] = True
 
 
 stderr_lines = []
@@ -124,6 +129,31 @@ if not seen["loaded"]:
 p.stdin.write('{"Type":14,"Name":"scene","Value":33}\n')  # SU0203
 p.stdin.flush()
 time.sleep(6)
+
+# S19 finisher: the "Restore default" button round-trip. The panel's real
+# sequence (CustomiseWallpaperViewModel): re-copy the PRISTINE properties
+# file over the property copy, THEN send Type 16. The bundled pristine
+# file has scene=42 (THRF9FE) — a correct player reverts from the
+# user-modified state below back to those defaults (a SECOND
+# "scene switched" + "defaults reloaded" on the wire).
+import re
+with open(_props_copy, "r", encoding="utf-8") as f:
+    props_txt = f.read()
+props_mod = re.sub(r'("scene":\s*\{[^}]*"value":\s*)\d+', r'\g<1>5', props_txt, count=1)
+props_mod = re.sub(r'("fog":\s*\{[^}]*"value":\s*)true', r'\g<1>false', props_mod, count=1)
+if props_mod == props_txt:
+    print("FATAL: could not modify the props copy for the Type-16 test")
+    p.kill(); sys.exit(1)
+with open(_props_copy, "w", encoding="utf-8") as f:
+    f.write(props_mod)
+p.stdin.write('{"Type":18,"Name":"fog","Value":false}\n')  # user fog off
+p.stdin.flush()
+time.sleep(1)
+shutil.copyfile(_props_src, _props_copy)   # the panel's pristine re-copy
+p.stdin.write('{"Type":16}\n')            # lp_button "Restore default"
+p.stdin.flush()
+time.sleep(6)
+
 p.stdin.write('{"Type":7}\n')  # suspend
 p.stdin.flush()
 time.sleep(2)
@@ -147,9 +177,20 @@ except OSError:
     pass
 
 print("handshake:", seen["hwnd"], "| loaded:", seen["loaded"],
-      "| scene_switch:", seen["scene_switch"], "| exit:", rc)
+      "| scene_switch:", seen["scene_switch"],
+      "| defaults_reloaded:", seen["defaults_reloaded"],
+      "| scene_switch_count:", seen["scene_switch_count"],
+      "| exit:", rc)
 
+# the Type-16 round-trip verdict: the reload ack arrived AND the engine
+# actually reverted the scene (a SECOND "scene switched" — back to the
+# pristine file's scene 42, after the earlier switch to 33). The fog
+# revert semantics ride the same lp_apply_props slots (verified by the
+# fifo round-trip harness + audit); the scene revert is the observable
+# end-to-end proof on the real exe.
 ok = (seen["hwnd"] is not None and seen["loaded"]
-      and seen["scene_switch"] and rc in (0, None))
+      and seen["scene_switch"] and rc in (0, None)
+      and seen["defaults_reloaded"]
+      and seen["scene_switch_count"] >= 2)
 print("PLAYER IPC TEST:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
