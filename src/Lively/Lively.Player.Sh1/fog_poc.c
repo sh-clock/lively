@@ -15577,7 +15577,10 @@ static int run_window_x11(LiveApp *A) {
 /* Compiled only with -DLIVELY_PLAYER (the shipped plugins\sh1 exe).    */
 /* Mirrors the __ANDROID__ seam philosophy: presentation + IPC only,   */
 /* ZERO engine math touched.                                            */
-/*                                                                      */
+/* S19 test portability: on non-Win32 the seam ALSO builds as the      */
+/* LP_POSIX_STUB harness surface (types + no-op window + pthread       */
+/* thread) so the stdin IPC contract runs verbatim under the Linux     */
+/* test build. The SHIPPED exe is Win32-only; the stub never ships.    */
 /* The contract (verified against Lively's own players, GPLv3):         */
 /*  - stdout is the IPC channel: JSON lines, one object per line,       */
 /*    {"Type":0,"Hwnd":<int>}  = msg_hwnd (the child window handle)     */
@@ -15595,6 +15598,113 @@ static int run_window_x11(LiveApp *A) {
 /*    and sizes it to the display; ExtPrograms/WebWebView2 parity).      */
 /* ==================================================================== */
 #ifdef LIVELY_PLAYER
+
+/* the seam's 3 path probes (boot scene / boot camdat / live scene switch)
+ * build their separator through LP_SEP: '\' on the shipped Windows exe
+ * (byte-identical string to the original literal), '/' on the non-Win32
+ * test stub. One source, both platforms, no #ifdef at the use sites.    */
+#if defined(_WIN32)
+  #define LP_SEP "\\"
+#else
+  #define LP_SEP "/"
+#endif
+
+#if !defined(_WIN32)
+/* ---- LP_POSIX_STUB: the minimal Win32-alike surface for the seam on  --
+ * non-Win32 TEST builds only (the shipped exe is Windows; this whole
+ * block is compiled out there). Types + no-op window/present + a
+ * pthread-backed CreateThread so lp_stdin_thread and the IPC contract
+ * run verbatim under the Linux harness. Zero engine impact.            */
+#define LP_POSIX_STUB 1
+typedef void *HWND;        typedef void *HDC;
+typedef unsigned long DWORD; typedef void *LPVOID;
+typedef void *WPARAM;      typedef void *LPARAM;
+typedef long LRESULT;      typedef unsigned UINT;
+typedef void *HANDLE;
+typedef void *HMODULE; typedef void *FARPROC;
+typedef struct { unsigned style; void *lpfnWndProc; void *hInstance;
+                 const char *lpszClassName; } WNDCLASSA;
+typedef struct { unsigned message; } MSG;
+typedef struct { long left, top, right, bottom; } RECT;
+typedef struct { long bmWidth, bmHeight; } STUB_BMIH;
+typedef struct { STUB_BMIH bmiHeader; } BITMAPINFO;
+#define WINAPI
+#define CALLBACK
+typedef unsigned (WINAPI *time_period_fn)(unsigned);
+typedef struct { int dummy; } PAINTSTRUCT;
+#define PM_REMOVE 1
+#define CS_OWNDC 1
+#define WS_POPUP 0x80000000ul
+#define WS_VISIBLE 0x10000000ul
+#define BI_RGB 0
+#define DIB_RGB_COLORS 0
+#define SRCCOPY 0x00CC0020ul
+#define COLORONCOLOR 3
+#define GetModuleHandleA(x) ((void *)0)
+#define RegisterClassA(wc) ((void)(wc), 1)
+#define SetStretchBltMode(dc, m) ((void)(dc), (void)(m))
+#define StretchDIBits(dc, a, b, c, d, e, f, g, h, i, j, k, l) ((void)0)
+#define BeginPaint(h, ps) ((void)(h), memset((ps), 0, sizeof(PAINTSTRUCT)), (HDC)0)
+#define EndPaint(h, ps) ((void)(h), (void)(ps))
+#define DefWindowProcA(h, m, w, l) ((void)(h), (void)(m), (void)(w), (void)(l), 0L)
+#define _fgetchar getchar
+#define Sleep(ms) sleep_ms((unsigned)(ms))
+#define PostQuitMessage(x) ((void)(x))
+#define WM_CLOSE 0x0010
+#define WM_DESTROY 0x0002
+#define WM_QUIT 0x0012
+#define WM_ERASEBKGND 0x0014
+#define WM_PAINT 0x000F
+#define WM_KEYDOWN 0x0100
+#define WM_KEYUP 0x0101
+#define VK_ESCAPE 0x1B
+#define VK_SPACE 0x20
+#define VK_LEFT 0x25
+#define VK_RIGHT 0x27
+#define VK_ADD 0x6B
+#define VK_SUBTRACT 0x6D
+#define VK_OEM_PLUS 0xBB
+#define VK_OEM_MINUS 0xBD
+#define DestroyWindow(h) ((void)(h))
+#define IsWindow(h) (0)
+#define GetClientRect(h, rc) ((void)(h), (void)(rc))
+#define GetDC(h) ((HDC)(h))
+#define ReleaseDC(h, dc) ((void)(h), (void)(dc))
+#define PeekMessageA(m, h, a, b, c) (0)
+#define TranslateMessage(m) ((void)(m))
+#define DispatchMessageA(m) ((void)(m))
+#define SetProcessDPIAware() ((void)0)
+#define CreateWindowA(cls, ttl, style, x, y, w, h, p, m, inst, lp) \
+    ((void)(cls), (void)(ttl), (void)(style), (void)(x), (void)(y), \
+     (void)(w), (void)(h), (void)(p), (void)(m), (void)(inst), (void)(lp), \
+     (HWND)lp_posix_stub_window())
+#define CloseHandle(h) ((void)(h))
+#define WM_USER (0x0400)
+DWORD lp_posix_stub_window(void);       /* unique non-NULL cookie */
+#include <pthread.h>
+typedef DWORD (*LP_STUB_THREAD_FN)(LPVOID);
+static void *lp_posix_thread_wrap(void *fnvp) {
+    LP_STUB_THREAD_FN fn = (LP_STUB_THREAD_FN)fnvp;
+    fn(NULL);
+    return NULL;
+}
+static HANDLE lp_posix_create_thread(void *fn, LPVOID p) {
+    (void)p;
+    pthread_t *th = (pthread_t *)malloc(sizeof(pthread_t));
+    if (!th) return NULL;
+    if (pthread_create(th, NULL, lp_posix_thread_wrap, fn) != 0) {
+        free(th); return NULL;
+    }
+    return (HANDLE)th;
+}
+#define CreateThread(at, st, fn, p, fl, id) \
+    lp_posix_create_thread((void *)(fn), (p))
+static DWORD lp_posix_stub_window_state = 0;
+DWORD lp_posix_stub_window(void) { return ++lp_posix_stub_window_state; }
+/* the seam's present call on the stub build: the framebuffer stays in
+ * RAM (fb_to_argb); the harness never displays it.                  */
+static void win32_present(HWND hwnd, LiveApp *A) { (void)hwnd; (void)A; }
+#endif /* !_WIN32 */
 
 static LiveApp *g_lp_app = NULL;
 static HWND g_lp_hwnd = NULL;
@@ -15824,6 +15934,7 @@ static void lp_reload_props_live(void) {
         v = lp_json_value_int(txt, "fps");
     if (v >= 1 && v <= 240) g_lp_fps_cap = v;
     /* the env pair: "camdat" (or index 0) = revert to the authored env   */
+    char ack_env[32] = {0};   /* echoed in the ack (audit R3-D2)        */
     {
         char envp[32] = {0};
         int envRead = lp_json_str(txt, "envpair", envp, sizeof(envp));
@@ -15841,6 +15952,8 @@ static void lp_reload_props_live(void) {
                 envRead = 1;
             }
         }
+        if (envRead)   /* audit R4-D1: make the env slot OBSERVABLE      */
+            snprintf(ack_env, sizeof(ack_env), "%s", envp);
         if (envRead && !strcmp(envp, "camdat")) {
             g_lp_prop_pair0 = -2;   /* revert to the authored env (same
                                      * slot semantics as the live Type-14) */
@@ -15872,7 +15985,19 @@ static void lp_reload_props_live(void) {
     }
     free(txt);
     fclose(pf);
-    lp_send_console(0, "defaults reloaded from LivelyProperties.json");
+    /* audit R3-D2: the ack echoes the values actually staged so the wire
+     * carries an OBSERVABLE of every slot (scene/env/checkboxes/fps) —
+     * a revert that stages only the scene cannot pass silently.       */
+    {
+        char ack[256];
+        snprintf(ack, sizeof(ack),
+                 "defaults reloaded (scene=%s fog=%d snow=%d dither=%d "
+                 "wobble=%d flashlight=%d fps=%d env=%s)",
+                 g_lp_scene_new, g_lp_prop_fog, g_lp_prop_snow,
+                 g_lp_prop_dither, g_lp_prop_wobble, g_lp_prop_flashlight,
+                 g_lp_fps_cap, ack_env[0] ? ack_env : "-");
+        lp_send_console(0, ack);
+    }
 }
 
 /* -- IPC IN: the stdin command thread ---------------------------------- */
@@ -16133,10 +16258,10 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
         if (g_lp_scene_reload && g_lp_scene_new[0]) {
             g_lp_scene_reload = 0;
             char path[512];
-            snprintf(path, sizeof(path), "%s\\sh1\\%s.glb",
+            snprintf(path, sizeof(path), "%s" LP_SEP "sh1" LP_SEP "%s.glb",
                      lpInput ? lpInput : ".", g_lp_scene_new);
             if (!file_exists(path))
-                snprintf(path, sizeof(path), "%s\\%s.glb",
+                snprintf(path, sizeof(path), "%s" LP_SEP "%s.glb",
                          lpInput ? lpInput : ".", g_lp_scene_new);
             Scene nsc;
             if (scene_load_glb(&nsc, path)) {
@@ -16171,7 +16296,13 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                         }
                         A->R.snow = A->snow.enabled ? &A->snow : NULL;
                     }
-                    lp_send_console(0, "scene switched");
+                    {   /* audit R3-D1: carry the ROOM so a wrong-index
+                         * regression cannot pass as a bare success      */
+                        char sm[128];
+                        snprintf(sm, sizeof(sm), "scene switched: %s",
+                                 g_lp_scene_new);
+                        lp_send_console(0, sm);
+                    }
                 } else {
                     scene_free(&nsc);
                     lp_send_console(1, "camdat re-bind failed");
@@ -16950,17 +17081,17 @@ int main(int argc, char **argv) {
          * layout), or <wallpaper-dir>\<SCENE>.glb (a plain import)      */
         if (g_lp_scene_new[0]) {
             char p[512];
-            snprintf(p, sizeof(p), "%s\\sh1\\%s.glb",
+            snprintf(p, sizeof(p), "%s" LP_SEP "sh1" LP_SEP "%s.glb",
                      g_lp_input_dir ? g_lp_input_dir : ".", g_lp_scene_new);
             if (!file_exists(p))
-                snprintf(p, sizeof(p), "%s\\%s.glb",
+                snprintf(p, sizeof(p), "%s" LP_SEP "%s.glb",
                          g_lp_input_dir ? g_lp_input_dir : ".", g_lp_scene_new);
             if (file_exists(p)) glbPath = strdup(p);
         }
         /* the camdat: <wallpaper-dir>\sh1\camdat.json (bundle layout)   */
         if (g_lp_input_dir) {
             char p[512];
-            snprintf(p, sizeof(p), "%s\\sh1\\camdat.json", g_lp_input_dir);
+            snprintf(p, sizeof(p), "%s" LP_SEP "sh1" LP_SEP "camdat.json", g_lp_input_dir);
             if (file_exists(p)) camdatPath = strdup(p);
             if (!inputDir) inputDir = g_lp_input_dir;
         }
