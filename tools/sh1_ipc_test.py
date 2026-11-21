@@ -113,6 +113,11 @@ if not seen["loaded"]:
     for l in stderr_lines[:40]:
         print(l)
     p.kill()
+    try:
+        os.remove(_props_copy)
+        os.rmdir(_propdir)
+    except OSError:
+        pass
     sys.exit(1)
 
 # LIVE property changes — exactly the messages the Customise panel sends
@@ -144,6 +149,7 @@ except OSError:
 print("handshake:", seen["hwnd"], "| loaded:", seen["loaded"],
       "| scene_switch:", seen["scene_switch"], "| exit:", rc)
 
-ok = seen["hwnd"] is not None and seen["loaded"] and rc in (0, None)
+ok = (seen["hwnd"] is not None and seen["loaded"]
+      and seen["scene_switch"] and rc in (0, None))
 print("PLAYER IPC TEST:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

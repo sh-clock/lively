@@ -96,7 +96,10 @@ namespace Lively.Core.Wallpapers
                     FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Constants.PlayerPartialPaths.Sh1Path),
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
-                    RedirectStandardError = false,
+                    RedirectStandardError = true,   /* S18 audit D2: the player's fatal
+                                                      * diagnostics (fprintf stderr: 'cannot
+                                                      * find THRF9FD.glb' etc.) were invisible —
+                                                      * the user's log had only 'exit code: 1' */
                     UseShellExecute = false,
                     StandardInputEncoding = Encoding.UTF8,
                     WorkingDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Constants.PlayerPartialPaths.Sh1Dir)
@@ -176,9 +179,11 @@ namespace Lively.Core.Wallpapers
             {
                 process.Exited += Proc_Exited;
                 process.OutputDataReceived += Proc_OutputDataReceived;
+                process.ErrorDataReceived += Proc_ErrorDataReceived;   /* S18 audit D2 */
                 process.Start();
                 Pid = process.Id;
                 process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
 
                 await tcsProcessWait.Task;
                 if (tcsProcessWait.Task.Result is not null)
@@ -192,10 +197,19 @@ namespace Lively.Core.Wallpapers
             }
         }
 
+        /* S18 audit D2: the player's stderr (engine boot errors, e.g.
+         * "cannot find THRF9FD.glb") is now captured into the app log so a
+         * startup failure carries its reason instead of a bare exit code. */
+        private void Proc_ErrorDataReceived(object sender, DataReceivedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(e.Data))
+                return;
+            Logger.Info($"Sh1{uniqueId}: {e.Data}");
+        }
+
         private void Proc_Exited(object sender, EventArgs e)
         {
-            Logger.Info($"Sh1{uniqueId}: Process exited with exit code: {process?.ExitCode}");
-            if (!isInitialized)
+            Logger.Info($"Sh1{uniqueId}: Process exited with exit code: {process?.ExitCode}");            if (!isInitialized)
             {
                 //startup failed: msg_hwnd never arrived.
                 tcsProcessWait.TrySetResult(
