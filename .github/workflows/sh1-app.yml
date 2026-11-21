@@ -48,6 +48,13 @@ jobs:
           python tools/sh1_nested_props_test.py
           if ($LASTEXITCODE -ne 0) { throw "NESTED PROPS TEST FAILED" }
 
+      - name: "Type-16 restore-default logic gate (the lp_reload_props_live harness)"
+        shell: pwsh
+        run: |
+          $env:CC = 'zig cc -target x86_64-windows-gnu'
+          python tools/sh1_type16_logic_test.py
+          if ($LASTEXITCODE -ne 0) { throw "TYPE16 LOGIC TEST FAILED" }
+
       - name: "TIM viewer gate (S19 tim-file needs no camdat/GLB)"
         shell: pwsh
         run: |
@@ -110,6 +117,12 @@ jobs:
           python -m pip install --quiet pillow
           python tools/sh1_ipc_test.py
           if ($LASTEXITCODE -ne 0) { throw "IPC TEST FAILED" }
+
+      - name: "Type-16 restore-default IPC test (the panel button, end-to-end)"
+        shell: pwsh
+        run: |
+          python tools/sh1_type16_ipc_test.py
+          if ($LASTEXITCODE -ne 0) { throw "TYPE16 IPC TEST FAILED" }
 
       - name: Regression gates (the engine renders + moves + the water flows)
         shell: pwsh
