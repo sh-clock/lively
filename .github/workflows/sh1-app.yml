@@ -14,7 +14,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ipc16-gate:
+    # S19 finisher: the Type-16 "Restore default" round-trip on the LINUX
+    # LP_POSIX_STUB build of the seam (zig cc -DLIVELY_PLAYER; the stub
+    # never ships — the Windows exe is the release artifact). Proves the
+    # full panel contract: handshake -> scene switch -> fog off -> pristine
+    # re-copy -> {"Type":16} -> revert (2nd scene switched + defaults
+    # reloaded) -> suspend/resume -> clean exit.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Zig
+        run: |
+          curl -sfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o zig.tar.xz
+          tar xf zig.tar.xz
+          mv zig-linux-x86_64-0.13.0 zig
+          echo "$PWD/zig" >> $GITHUB_PATH
+      - name: IPC16 round-trip gate (Type-16 restore-default)
+        run: |
+          python3 tools/sh1_ipc16_test.py
+
   build:
+    needs: ipc16-gate   # a red Type-16 gate must BLOCK the release upload
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -27,7 +49,7 @@ jobs:
 
       - name: Setup Zig (the player cross-toolchain)
         run: |
-          curl -sL https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip -o zig.zip
+          curl -sfL https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip -o zig.zip
           Expand-Archive -Path zig.zip -DestinationPath "$env:RUNNER_TEMP" -Force
           $zig = Get-ChildItem "$env:RUNNER_TEMP" -Recurse -Filter zig.exe | Select-Object -First 1
           $zigDir = Split-Path $zig.FullName
