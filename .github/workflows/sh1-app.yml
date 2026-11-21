@@ -34,23 +34,24 @@ jobs:
           Add-Content $env:GITHUB_PATH $zigDir
           echo "zig staged at: $zigDir"
 
-    - name: Nested-props restore gate (the S19 panel-schema fix)
-      shell: pwsh
-      run: |
-        $env:CC = 'zig cc -target x86_64-windows-gnu'
-        python tools/sh1_nested_props_test.py
-        if ($LASTEXITCODE -ne 0) { throw "NESTED PROPS TEST FAILED" }
+      - name: "Nested-props restore gate (S19 panel-schema fix)"
+        shell: pwsh
+        run: |
+          $env:CC = 'zig cc -target x86_64-windows-gnu'
+          python tools/sh1_nested_props_test.py
+          if ($LASTEXITCODE -ne 0) { throw "NESTED PROPS TEST FAILED" }
 
-    - name: TIM viewer gate (S19: --tim-file needs no camdat/GLB)
-      shell: pwsh
-      run: |
-        zig cc -target x86_64-windows-gnu -O2 -o fog_gate.exe src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
-        python tools/sh1_tim_fixture.py
-        ./fog_gate.exe --tim-file sh1_fixture.TIM --out tim_out
-        if ($LASTEXITCODE -ne 0) { throw "TIM VIEWER FAILED" }
-        $png = Get-ChildItem 'tim_out/*.png'
-        if (-not $png) { throw "TIM PNG MISSING" }
-    - name: Build the SH1 native player (the LIVELY_PLAYER seam)
+      - name: "TIM viewer gate (S19 tim-file needs no camdat/GLB)"
+        shell: pwsh
+        run: |
+          zig cc -target x86_64-windows-gnu -O2 -o fog_gate.exe src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
+          python tools/sh1_tim_fixture.py
+          ./fog_gate.exe --tim-file sh1_fixture.TIM --out tim_out
+          if ($LASTEXITCODE -ne 0) { throw "TIM VIEWER FAILED" }
+          $png = Get-ChildItem 'tim_out/*.png'
+          if (-not $png) { throw "TIM PNG MISSING" }
+
+      - name: Build the SH1 native player (the LIVELY_PLAYER seam)
         run: |
           zig cc -target x86_64-windows-gnu -O2 -std=c99 -DLIVELY_PLAYER `
             -o Lively.Player.Sh1.exe `
