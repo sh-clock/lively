@@ -15952,6 +15952,8 @@ static void lp_reload_props_live(void) {
                 envRead = 1;
             }
         }
+        if (envRead)   /* audit R4-D1: make the env slot OBSERVABLE      */
+            snprintf(ack_env, sizeof(ack_env), "%s", envp);
         if (envRead && !strcmp(envp, "camdat")) {
             g_lp_prop_pair0 = -2;   /* revert to the authored env (same
                                      * slot semantics as the live Type-14) */
