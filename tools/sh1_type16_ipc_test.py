@@ -152,11 +152,13 @@ def wait_for(pred, timeout, what):
         if pred():
             return True
         time.sleep(0.2)
+    if not pred():
+        print(f"TIMEOUT waiting for: {what}")
     return pred()
 
 
 # ---- 1. the boot handshake ----------------------------------------------
-if not wait_for(lambda: seen["loaded"], 180):
+if not wait_for(lambda: seen["loaded"], 180, "msg_wploaded (boot handshake)"):
     print("FATAL: msg_wploaded never arrived")
     print("--- player stderr (engine boot log) ---")
     for l in stderr_lines[:40]:
@@ -183,9 +185,14 @@ p.stdin.write('{"Type":14,"Name":"scene","Value":33}\n')
 p.stdin.flush()
 
 # the live scene switch (SU0203 loaded from the bundle)
-if not wait_for(lambda: seen["scene_switches"] >= 1, 60):
+if not wait_for(lambda: seen["scene_switches"] >= 1, 60, "scene switched: SU0203 (the diverge)"):
     print("FATAL: the diverge scene switch never happened")
     p.kill()
+    try:
+        os.remove(_props_copy)
+        os.rmdir(_propdir)
+    except OSError:
+        pass
     sys.exit(1)
 
 # ---- 3. RESTORE DEFAULT (the panel button, byte-exact) -------------------
@@ -194,8 +201,8 @@ restore_pristine_copy()
 p.stdin.write('{"Type":16,"Name":"lively_default_settings_reload","IsDefault":true}\n')
 p.stdin.flush()
 
-ok_ack = wait_for(lambda: seen["defaults_ack"], 30)
-ok_revert = wait_for(lambda: seen["scene_switches"] >= 2, 60)
+ok_ack = wait_for(lambda: seen["defaults_ack"], 30, "defaults reloaded ack")
+ok_revert = wait_for(lambda: seen["scene_switches"] >= 2, 60, "scene switched: THRF9FE (the revert)")
 
 time.sleep(3)   # let the revert settle before closing
 
