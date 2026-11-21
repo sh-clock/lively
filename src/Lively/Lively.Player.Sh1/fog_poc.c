@@ -17013,6 +17013,27 @@ static int cli_time_kv(const char *s, double *out) {
 }
 
 int main(int argc, char **argv) {
+#if defined(LIVELY_PLAYER) && defined(_WIN32)
+    /* S20 bug 2: a console window flashed at wallpaper startup. The
+     * player exe is built with the CONSOLE subsystem (zig cc default),
+     * so when Lively (a GUI app) launches it with redirected stdio the
+     * loader still creates a fresh console for it. The engine's chatter
+     * is already silenced on this build (printf(...) is a no-op and the
+     * diagnostics travel the stderr redirect the C# side owns), so the
+     * console carries nothing — detach it before any drawing happens.
+     * FreeConsole (kernel32) closes the host console without touching
+     * the redirected stdio handles Lively passed in, so the IPC wire
+     * (stdout) and the S18 stderr diagnostics both survive.          */
+    {
+        typedef long (WINAPI *free_console_fn)(void);
+        HMODULE k32 = GetModuleHandleA("kernel32.dll");
+        if (k32) {
+            free_console_fn fc = (free_console_fn)
+                (void *)GetProcAddress(k32, "FreeConsole");
+            if (fc) fc();
+        }
+    }
+#endif
     const char *glbPath = NULL, *camdatPath = NULL, *inputDir = NULL;
     int camdatAuto = 0;    /* v33: auto-discovered camdat — its env is NOT
                             * authored for THIS room; the GLB SH1X.env owns
