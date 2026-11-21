@@ -16086,6 +16086,16 @@ static int run_window_x11(LiveApp *A) {
 /* ==================================================================== */
 #ifdef LIVELY_PLAYER
 
+/* the seam's 3 path probes (boot scene / boot camdat / live scene switch)
+ * build their separator through LP_SEP: '\' on the shipped Windows exe
+ * (byte-identical string to the original literal), '/' on the non-Win32
+ * test stub. One source, both platforms, no #ifdef at the use sites.    */
+#if defined(_WIN32)
+  #define LP_SEP "\\"
+#else
+  #define LP_SEP "/"
+#endif
+
 #if !defined(_WIN32)
 /* ---- LP_POSIX_STUB: the minimal Win32-alike surface for the seam on  --
  * non-Win32 TEST builds only (the shipped exe is Windows; this whole
@@ -16093,11 +16103,6 @@ static int run_window_x11(LiveApp *A) {
  * pthread-backed CreateThread so lp_stdin_thread and the IPC contract
  * run verbatim under the Linux harness. Zero engine impact.            */
 #define LP_POSIX_STUB 1
-/* the seam's path probes use Windows separators on the shipped exe; on
- * the stub '\' is a literal char and the probe would miss. LP_SEP
- * keeps BOTH builds on one source: '\\' on Windows (byte-identical
- * string to the pre-macro literal), '/' on the stub.                 */
-#define LP_SEP "/"
 typedef void *HWND;        typedef void *HDC;
 typedef unsigned long DWORD; typedef void *LPVOID;
 typedef void *WPARAM;      typedef void *LPARAM;
