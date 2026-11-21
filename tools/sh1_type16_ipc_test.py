@@ -12,28 +12,31 @@ revert live. S19 audit D1: the native player used to ignore the message
 (state divergence until relaunch); lp_reload_props_live now re-reads the
 copy and stages every value into the same live slots Type 12/14/18 use.
 
-Test sequence (all messages byte-exact with the C# senders):
+Test sequence (all messages match the C# senders' serialized content):
   1. Launch with the app's own argv (S18: no --wallpaper-scene — the C#
      passes none) + a props COPY (CreateLivelyPropertyFolder).
   2. DIVERGE exactly like a user editing the panel: write a user-modified
      props copy (scene 33 SU0203, fog off, fps 15, envpair item 4) AND send
      the live messages the panel sends while editing:
        {"Type":14,"Name":"scene","Value":33}
-       {"Type":12,"Name":"fps","Value":15.0}
+       {"Type":12,"Name":"fps","Value":15.0,"Step":5.0}
        {"Type":18,"Name":"fog","Value":false}
-     -> assert "scene switched" #1 (the live scene reload).
+     -> assert "scene switched: SU0203" (the live reload carries the room).
   3. RESTORE exactly like the panel button: re-copy the pristine bundle
      LivelyProperties.json over the copy (File.Copy semantics) + send
        {"Type":16,"Name":"lively_default_settings_reload","IsDefault":true}
-     -> assert the console ack "defaults reloaded from ..."
-     -> assert "scene switched" #2 (the revert reload: pristine scene 42
-        THRF9FE != the diverged live SU0203).
+     -> assert the console ack "defaults reloaded (scene=THRF9FE fog=1 ..."
+        (the enriched ack echoes every staged slot — audit R3-D2)
+     -> assert "scene switched: THRF9FE" (the revert reload: pristine scene
+        42 THRF9FE != the diverged live SU0203 — a wrong-index regression
+        cannot pass).
   4. Close (Type 5) -> the process must exit cleanly.
 
 Exit non-zero on any contract violation.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -101,7 +104,7 @@ p = subprocess.Popen(
 )
 
 seen = {"hwnd": None, "loaded": False, "scene_switches": 0,
-        "defaults_ack": False, "console": []}
+        "switch_rooms": [], "defaults_ack": "", "console": []}
 
 
 def reader():
@@ -123,8 +126,11 @@ def reader():
             seen["console"].append(msg)
             if "scene switched" in msg:
                 seen["scene_switches"] += 1
+                m = re.search(r"scene switched: ([A-Za-z0-9_.-]+)", msg)
+                if m:
+                    seen["switch_rooms"].append(m.group(1))
             if "defaults reloaded" in msg:
-                seen["defaults_ack"] = True
+                seen["defaults_ack"] = msg
 
 
 stderr_lines = []
@@ -156,11 +162,18 @@ if not wait_for(lambda: seen["loaded"], 180):
     for l in stderr_lines[:40]:
         print(l)
     p.kill()
+    try:
+        os.remove(_props_copy)
+        os.rmdir(_propdir)
+    except OSError:
+        pass
     sys.exit(1)
 
 # ---- 2. DIVERGE: the user edits (panel writes the copy + live msgs) ----
 write_diverged_copy()
-p.stdin.write('{"Type":12,"Name":"fps","Value":15.0}\n')
+# LivelySlider always carries Step in the panel's real serialization
+# (LivelySlider.cs + the VM's slider event); include it for byte-exactness.
+p.stdin.write('{"Type":12,"Name":"fps","Value":15.0,"Step":5.0}\n')
 p.stdin.flush()
 time.sleep(1)
 p.stdin.write('{"Type":18,"Name":"fog","Value":false}\n')
@@ -204,11 +217,21 @@ except OSError:
 
 print("handshake:", seen["hwnd"], "| loaded:", seen["loaded"],
       "| scene_switches:", seen["scene_switches"],
-      "| defaults_ack:", seen["defaults_ack"], "| exit:", rc)
+      "| rooms:", seen["switch_rooms"],
+      "| ack:", seen["defaults_ack"][:90], "| exit:", rc)
 print("console:", seen["console"][:12])
 
+# the EXACT rooms (SU0203 the user switch, THRF9FE the revert — a
+# wrong-index or partial-revert regression cannot pass), the ack echoing
+# the staged pristine slots (incl. env=camdat), clean exit.
 ok = (seen["hwnd"] is not None and seen["loaded"]
-      and seen["scene_switches"] >= 2 and seen["defaults_ack"]
+      and seen["scene_switches"] >= 2
+      and seen["switch_rooms"][:2][-1:] == ["THRF9FE"]
+      and "SU0203" in seen["switch_rooms"]
+      and "scene=THRF9FE" in seen["defaults_ack"]
+      and "fog=1" in seen["defaults_ack"]
+      and "fps=30" in seen["defaults_ack"]
+      and "env=camdat" in seen["defaults_ack"]
       and rc in (0, None) and ok_ack and ok_revert)
 print("TYPE16 IPC TEST:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

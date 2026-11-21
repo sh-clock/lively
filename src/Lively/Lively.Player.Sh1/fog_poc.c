@@ -16440,10 +16440,12 @@ static void lp_reload_props_live(void) {
             }
         }
         if (envRead && !strcmp(envp, "camdat")) {
+            snprintf(ack_env, sizeof(ack_env), "%s", envp);  /* R3-D2 echo */
             g_lp_prop_pair0 = -2;   /* revert to the authored env (same
                                      * slot semantics as the live Type-14) */
             g_lp_prop_pair1 = -1;
         } else if (envRead) {
+            snprintf(ack_env, sizeof(ack_env), "%s", envp);  /* R3-D2 echo */
             int a = -1, b = -1;
             if (sscanf(envp, "%d,%d", &a, &b) == 2 &&
                 a >= 0 && a <= 20 && b >= 0 && b <= 20) {

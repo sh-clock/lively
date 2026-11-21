@@ -147,6 +147,7 @@ ok = (seen["hwnd"] and seen["loaded"]
       and "scene=THRF9FE" in seen["defaults_reloaded"]
       and "fog=1" in seen["defaults_reloaded"]
       and "fps=30" in seen["defaults_reloaded"]
+      and "env=camdat" in seen["defaults_reloaded"]
       and seen["errors"] == 0
       and rc == 0)
 print("IPC16 TEST:", "PASS" if ok else "FAIL")
