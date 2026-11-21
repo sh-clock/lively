@@ -106,7 +106,7 @@ def send(s):
         p.stdin.write(s + "\n"); p.stdin.flush()
     except (BrokenPipeError, OSError):
         print("FATAL: player exited before receiving:", s)
-        p.kill(); sys.exit(1)
+        p.kill(); shutil.rmtree(work, ignore_errors=True); sys.exit(1)
 
 send('{"Type":14,"Name":"scene","Value":33}')       # user: SU0203
 time.sleep(4)
@@ -125,6 +125,7 @@ with open(props, "r", encoding="utf-8") as f:
 txt2 = re.sub(r'("scene":\s*\{[^}]*"value":\s*)42', r'\g<1>33', txt, count=1)
 txt2 = re.sub(r'("fog":\s*\{[^}]*"value":\s*)true', r'\g<1>false', txt2, count=1)
 txt2 = re.sub(r'("fps":\s*\{[^}]*"value":\s*)30', r'\g<1>15', txt2, count=1)
+txt2 = re.sub(r'("envpair":\s*\{[^}]*"value":\s*)0', r'\g<1>3', txt2, count=1)
 if txt2 == txt:
     print("FATAL: discriminator rewrite failed (bundle format drift?)")
     p.kill(); shutil.rmtree(work, ignore_errors=True); sys.exit(1)
@@ -173,6 +174,7 @@ ok = (seen["hwnd"] and seen["loaded"]
       and "scene=SU0203" in seen["acks"][1]
       and "fog=0" in seen["acks"][1]
       and "fps=15" in seen["acks"][1]
+      and "env=6,3" in seen["acks"][1]
       and seen["errors"] == 0
       and rc == 0)
 print("IPC16 TEST:", "PASS" if ok else "FAIL")
