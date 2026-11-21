@@ -25,6 +25,7 @@ Exit non-zero on any contract violation; prints a PASS/FAIL verdict.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -72,7 +73,8 @@ p = subprocess.Popen(
 )
 
 seen = {"hwnd": None, "loaded": False, "scene_switch": False, "console": [],
-       "defaults_reloaded": False, "scene_switch_count": 0}
+       "defaults_reloaded": False, "scene_switch_count": 0,
+       "revert_room": None}
 
 
 def reader():
@@ -95,6 +97,9 @@ def reader():
             if "scene switched" in msg:
                 seen["scene_switch"] = True
                 seen["scene_switch_count"] += 1
+                m2 = re.search(r"scene switched: ([A-Za-z0-9_.-]+)", msg)
+                if m2:
+                    seen["revert_room"] = m2.group(1)
             if "defaults reloaded" in msg:
                 seen["defaults_reloaded"] = True
 
@@ -131,21 +136,13 @@ p.stdin.flush()
 time.sleep(6)
 
 # S19 finisher: the "Restore default" button round-trip. The panel's real
-# sequence (CustomiseWallpaperViewModel): re-copy the PRISTINE properties
-# file over the property copy, THEN send Type 16. The bundled pristine
-# file has scene=42 (THRF9FE) — a correct player reverts from the
-# user-modified state below back to those defaults (a SECOND
-# "scene switched" + "defaults reloaded" on the wire).
-import re
-with open(_props_copy, "r", encoding="utf-8") as f:
-    props_txt = f.read()
-props_mod = re.sub(r'("scene":\s*\{[^}]*"value":\s*)\d+', r'\g<1>5', props_txt, count=1)
-props_mod = re.sub(r'("fog":\s*\{[^}]*"value":\s*)true', r'\g<1>false', props_mod, count=1)
-if props_mod == props_txt:
-    print("FATAL: could not modify the props copy for the Type-16 test")
-    p.kill(); sys.exit(1)
-with open(_props_copy, "w", encoding="utf-8") as f:
-    f.write(props_mod)
+# sequence (CustomiseWallpaperViewModel): the user's live modifications,
+# then on "Restore default" the app re-copies the PRISTINE properties file
+# over the property copy and sends Type 16. The engine's state must revert
+# to the FILE's values (scene 42 = THRF9FE). The user modification here is
+# the IPC message (what the panel actually sends); the pristine re-copy is
+# the revert trigger. (R3: the old regex-rewrite of the copy was dead
+# weight — the engine only reads the file at boot and inside Type 16.)
 p.stdin.write('{"Type":18,"Name":"fog","Value":false}\n')  # user fog off
 p.stdin.flush()
 time.sleep(1)
@@ -191,6 +188,7 @@ print("handshake:", seen["hwnd"], "| loaded:", seen["loaded"],
 ok = (seen["hwnd"] is not None and seen["loaded"]
       and seen["scene_switch"] and rc in (0, None)
       and seen["defaults_reloaded"]
-      and seen["scene_switch_count"] >= 2)
+      and seen["scene_switch_count"] >= 2
+      and seen["revert_room"] == "THRF9FE")
 print("PLAYER IPC TEST:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
