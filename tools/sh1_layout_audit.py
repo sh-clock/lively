@@ -44,6 +44,40 @@ for rel, why in REQUIRED:
         size = os.path.getsize(full)
         print(f"  OK  {rel}  ({size//1024} KB)")
 
+# S18 (audit D1): the shipped bundle zip is what USERS get — the app extracts
+# 2.zip on first run. The gates above only proved the SOURCE folder boots; a
+# truncated or wrongly-packed zip would release green. Assert the internals:
+# 44 scene GLBs + camdat.json under sh1-wallpaper/sh1/, the LivelyInfo.json
+# (Type=sh1, empty Arguments — the no-scene boot), the properties file and
+# the preview. Entry names inside the zip are forward-slash paths.
+bundle = os.path.join(publish, "bundle", "wallpapers", "2.zip")
+if os.path.isfile(bundle):
+    import zipfile
+    EXPECTED_SCENES = 44
+    with zipfile.ZipFile(bundle) as z:
+        names = set(z.namelist())
+        if "sh1-wallpaper/LivelyInfo.json" not in names:
+            missing.append(("2.zip:sh1-wallpaper/LivelyInfo.json",
+                            "the wallpaper entry — zip packed wrong"))
+        if "sh1-wallpaper/LivelyProperties.json" not in names:
+            missing.append(("2.zip:sh1-wallpaper/LivelyProperties.json",
+                            "the Customise panel defaults"))
+        if "sh1-wallpaper/sh1/camdat.json" not in names:
+            missing.append(("2.zip:sh1-wallpaper/sh1/camdat.json",
+                            "the camera track + env (bundle layout, S18)"))
+        glbs = [n for n in names if n.startswith("sh1-wallpaper/sh1/")
+                and n.endswith(".glb")]
+        if len(glbs) != EXPECTED_SCENES:
+            missing.append((f"2.zip:sh1-wallpaper/sh1/*.glb",
+                            f"expected {EXPECTED_SCENES} scene GLBs, "
+                            f"found {len(glbs)}"))
+        info = z.read("sh1-wallpaper/LivelyInfo.json").decode("utf-8")
+        if '"Type": "sh1"' not in info and '"Type":"sh1"' not in info:
+            missing.append(("2.zip:LivelyInfo.json Type",
+                            "must be sh1"))
+    print(f"  OK  2.zip internals: {len(glbs)} GLBs + camdat.json + "
+          f"LivelyInfo/Properties under sh1-wallpaper/sh1/ (S18 guard)")
+
 # The UI publish must bring its runtime (self-contained): check the .dll row
 ui_dir = os.path.join(publish, "plugins", "UI")
 if os.path.isdir(ui_dir):

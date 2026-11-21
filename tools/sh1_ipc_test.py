@@ -11,13 +11,24 @@ asserts the IPC contract the C# side depends on:
   4. suspend (7) / resume (8) — must not crash
   5. close (5) — the process must exit cleanly
 
+S18: the launch now uses the EXACT argv the C# Sh1Wallpaper builds — NO
+--wallpaper-scene (LivelyInfo.json Arguments is empty and the C# passes
+none) and WITH --wallpaper-property pointing at a copy of the bundled
+LivelyProperties.json (the CreateLivelyPropertyFolder copy the app passes).
+The v1.0.2 player exit(1)-before-msg_hwnd bug hid behind this difference:
+the old test passed --wallpaper-scene explicitly, so the no-scene default
+boot path (which must probe <wallpaperDir>\\sh1\\ for the GLB) was never
+exercised on CI. The real app always launches that path.
+
 Run from the repo root (CI does it after the layout audit).
 Exit non-zero on any contract violation; prints a PASS/FAIL verdict.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -32,10 +43,21 @@ if not os.path.isdir(WPDIR):
     print("FATAL: wallpaper folder missing:", WPDIR)
     sys.exit(1)
 
+# The app's CreateLivelyPropertyFolder writes a COPY of the wallpaper's
+# LivelyProperties.json and passes its path via --wallpaper-property.
+# Reproduce that copy exactly (temp dir, real file content).
+_props_src = os.path.join(WPDIR, "LivelyProperties.json")
+if not os.path.exists(_props_src):
+    print("FATAL: bundle LivelyProperties.json missing:", _props_src)
+    sys.exit(1)
+_propdir = tempfile.mkdtemp(prefix="sh1_props_")
+_props_copy = os.path.join(_propdir, "LivelyProperties.json")
+shutil.copyfile(_props_src, _props_copy)
+
 args = [
     EXE,
     "--wallpaper-path", WPDIR,
-    "--wallpaper-scene", "THRF9FD",
+    "--wallpaper-property", _props_copy,
     "--wallpaper-type", "sh1",
 ]
 
@@ -111,6 +133,13 @@ try:
 except subprocess.TimeoutExpired:
     p.kill()
     rc = p.wait()
+
+# the props copy is test scratch — remove it (best-effort)
+try:
+    os.remove(_props_copy)
+    os.rmdir(_propdir)
+except OSError:
+    pass
 
 print("handshake:", seen["hwnd"], "| loaded:", seen["loaded"],
       "| scene_switch:", seen["scene_switch"], "| exit:", rc)

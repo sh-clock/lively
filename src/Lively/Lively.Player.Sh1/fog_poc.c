@@ -16799,6 +16799,16 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 4; i++) {
             if (file_exists(cands[i])) { camdatPath = cands[i]; break; }
         }
+        /* S18: the wallpaper-bundle layout keeps camdat.json in
+         * <inputDir>/sh1/ (beside the scene GLBs) — same probe family as
+         * the LIVELY seam's own camdat resolution. Plain runs with their
+         * own layouts match earlier candidates; this only fires when the
+         * root-level ones are absent, so plain behaviour is unchanged. */
+        if (!camdatPath && inputDir) {
+            snprintf(cdBuf, sizeof(cdBuf), "%s/sh1/camdat.json", inputDir);
+            if (file_exists(cdBuf))
+                camdatPath = cdBuf;
+        }
         if (!camdatPath) {
             fprintf(stderr, "cannot find camdat.json (use --camdat FILE or --input DIR)\n");
             return 1;
@@ -16864,6 +16874,22 @@ int main(int argc, char **argv) {
                     char *dup = strdup(try);
                     if (dup) glbPath = dup;
                 }
+                /* S18: the Lively wallpaper BUNDLE layout keeps every scene
+                 * GLB in <wallpaperDir>\sh1\ (camdat.json lives there too —
+                 * the LIVELY seam already probes it for the camdat). The
+                 * shipped player boots with NO --glb/--wallpaper-scene when
+                 * LivelyProperties.json carries no scene, so this probe is
+                 * the difference between "boots the authored room" and
+                 * "cannot find THRF9FD.glb -> exit 1 BEFORE msg_hwnd" —
+                 * the user's real-launch failure (CI passed only because
+                 * the IPC test passed --wallpaper-scene explicitly).      */
+                if (!glbPath) {
+                    snprintf(try, sizeof(try), "%s/sh1/%s", inputDir, base);
+                    if (file_exists(try)) {
+                        char *dup = strdup(try);
+                        if (dup) glbPath = dup;
+                    }
+                }
             }
             if (glbPath)
                 printf("[boot] camdat default scene: %s (models[0].file)\n",
@@ -16877,6 +16903,17 @@ int main(int argc, char **argv) {
             }
             for (int i = 0; i < 4; i++) {
                 if (file_exists(cands[i])) { glbPath = cands[i]; break; }
+            }
+            /* S18: same bundle-layout probe as the models[0].file peek —
+             * <wallpaperDir>\sh1\THRF9FD.glb (the no-scene default boot,
+             * the exact argv Lively's C# Sh1Wallpaper builds). Plain-mode
+             * runs never reach this with their own layouts because the
+             * probes above already matched; the added probe only fires
+             * when nothing else exists, so plain behaviour is unchanged.  */
+            if (!glbPath && inputDir) {
+                snprintf(glbBuf, sizeof(glbBuf), "%s/sh1/THRF9FD.glb", inputDir);
+                if (file_exists(glbBuf))
+                    glbPath = glbBuf;
             }
             if (!glbPath) {
                 fprintf(stderr, "cannot find THRF9FD.glb (use --glb FILE or --input DIR)\n");
