@@ -15614,6 +15614,73 @@ static int lp_json_bool(const char *j, const char *key, int dflt) {
     if (!strncmp(p, "false", 5)) return 0;
     return dflt;
 }
+/* S19 (audit D2/D2b): the LivelyProperties.json copy the app passes is
+ * the PANEL schema — every property is a NESTED OBJECT:
+ *   "fog": { "type": "checkbox", "value": true, ... }
+ *   "scene": { "type": "dropdown", "value": 42, ... }
+ * The flat scans above (bool/int) matched "fog": followed by '{' and
+ * silently returned the default, so NO persisted property ever restored.
+ * lp_json_value_*() scans INSIDE the key's object for "value": — the
+ * exact field the Customise panel writes (CommandHandler.cs writes
+ * lp[name]["value"] = ...; the drop copy keeps the bundled schema).
+ * A flat "key": <literal> shape (the hand-rolled/test senders) still
+ * wins through the original helpers first.                               */
+static const char *lp_json_value_ptr(const char *j, const char *key) {
+    /* find "key": ... then the "value": inside that object */
+    char pat[64]; snprintf(pat, sizeof(pat), "\"%s\":", key);
+    const char *p = strstr(j, pat);
+    if (!p) return NULL;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '{') return NULL;              /* flat shape — not ours  */
+    /* scan forward to the matching close brace (depth 1: the panel
+     * objects hold no nested objects; "items" is an array of strings) */
+    int depth = 0;
+    const char *q = p;
+    while (*q) {
+        if (*q == '{') depth++;
+        else if (*q == '}') { depth--; if (!depth) break; }
+        else if (*q == '"') {            /* skip string contents incl. braces */
+            q++;
+            while (*q && *q != '"') { if (*q == '\\' && q[1]) q++; q++; }
+            if (!*q) return NULL;
+        }
+        q++;
+    }
+    if (!*q) return NULL;
+    /* the value: field inside [p, q] */
+    const char *v = strstr(p, "\"value\":");
+    if (!v || v >= q) return NULL;
+    v += 8;
+    while (*v == ' ' || *v == '\t') v++;
+    return v;
+}
+static int lp_json_value_int(const char *j, const char *key) {
+    const char *v = lp_json_value_ptr(j, key);
+    if (!v) return -1;
+    if (*v == '"' || *v == '{' || *v == '[' || *v == 0) return -1;
+    char *e = NULL;
+    long x = strtol(v, &e, 10);
+    return (e == v) ? -1 : (int)x;
+}
+static int lp_json_value_bool(const char *j, const char *key, int dflt) {
+    const char *v = lp_json_value_ptr(j, key);
+    if (!v) return dflt;
+    if (!strncmp(v, "true", 4)) return 1;
+    if (!strncmp(v, "false", 5)) return 0;
+    return dflt;
+}
+static int lp_json_value_str(const char *j, const char *key,
+                             char *out, size_t outn) {
+    const char *v = lp_json_value_ptr(j, key);
+    if (!v || *v != '"') return 0;
+    const char *e = strchr(v + 1, '"');
+    if (!e) return 0;
+    size_t n = (size_t)(e - v - 1);
+    if (n >= outn) n = outn - 1;
+    memcpy(out, v + 1, n); out[n] = 0;
+    return 1;
+}
 /* lp_json_str: copy a JSON string value (no escapes in our senders) */
 static int lp_json_str(const char *j, const char *key,
                        char *out, size_t outn) {
@@ -16654,10 +16721,15 @@ int main(int argc, char **argv) {
                     if (txt && fread(txt, 1, (size_t)jsz, pf) == (size_t)jsz) {
                         txt[jsz] = 0;
                         char scene[LP_SCENE_MAX] = {0};
-                        /* value may be an int index (the app serializes
-                         * the DropdownModel int) — read both shapes        */
+                        /* S19: the panel schema nests the value one level
+                         * down ("scene": {"type":"dropdown","value":42});
+                         * flat shape (hand senders) first, nested second   */
                         lp_json_str(txt, "scene", scene, sizeof(scene));
                         int idx = lp_json_int(txt, "scene");
+                        if (!scene[0] && idx < 0) {
+                            lp_json_value_str(txt, "scene", scene, sizeof(scene));
+                            idx = lp_json_value_int(txt, "scene");
+                        }
                         char envp[32] = {0};
                         if (scene[0]) {
                             snprintf(g_lp_scene_new, LP_SCENE_MAX, "%s", scene);
@@ -16665,8 +16737,28 @@ int main(int argc, char **argv) {
                             snprintf(g_lp_scene_new, LP_SCENE_MAX, "%s",
                                      g_lp_scenes[idx]);
                         }
-                        if (lp_json_str(txt, "envpair", envp, sizeof(envp)) &&
-                            strcmp(envp, "camdat")) {
+                        int envRead = lp_json_str(txt, "envpair", envp, sizeof(envp));
+                        if (!envRead)
+                            envRead = lp_json_value_str(txt, "envpair", envp, sizeof(envp));
+                        /* S19 audit D5: the panel persists a dropdown as the
+                         * INT item index (CommandHandler.cs: lp[name]["value"]
+                         * = selectedIndex) — map it through the SAME pair
+                         * table the live Type-14 IPC path uses, so a saved
+                         * "6,3" (index 3) restores at boot like it does live */
+                        if (!envRead) {
+                            int eidx = lp_json_value_int(txt, "envpair");
+                            /* -1 = miss; 0 = "camdat" (revert-to-authored, skip);
+                             * 1..8 map to the authored pair strings            */
+                            static const char *lp_env_items[] = {
+                                "camdat", "1,1", "2,2", "6,3", "7,4",
+                                "9,9", "13,13", "16,16"
+                            };
+                            if (eidx > 0 && eidx < (int)(sizeof(lp_env_items)/sizeof(lp_env_items[0]))) {
+                                snprintf(envp, sizeof(envp), "%s", lp_env_items[eidx]);
+                                envRead = 1;
+                            }
+                        }
+                        if (envRead && strcmp(envp, "camdat")) {
                             int a2 = -1, b2 = -1;
                             if (sscanf(envp, "%d,%d", &a2, &b2) == 2 &&
                                 a2 >= 0 && a2 <= 20 && b2 >= 0 && b2 <= 20) {
@@ -16690,11 +16782,15 @@ int main(int argc, char **argv) {
                     if (txt && fread(txt, 1, (size_t)jsz, pf) == (size_t)jsz) {
                         txt[jsz] = 0;
                         int v;
-                        if ((v = lp_json_bool(txt, "fog", -1)) >= 0) fogForced = v;
-                        if ((v = lp_json_bool(txt, "snow", -1)) >= 0) { snowEnabled = v; snowForced = v; }
-                        if ((v = lp_json_bool(txt, "dither", -1)) >= 0) { dither = v; ditherForced = v; }
-                        if ((v = lp_json_bool(txt, "wobble", -1)) >= 0) { opts.ps1 = v; opts.linear = !v; psxForced = v; }
-                        if ((v = lp_json_bool(txt, "flashlight", -1)) >= 0) flashlightForced = v;
+                        /* S19: flat first (test senders), the panel's nested
+                         * "value": fallback second (the app's real schema)  */
+                        #define LP_BOOL(k, d) \
+                            ((v = lp_json_bool(txt, k, d)) != (d) ? v : lp_json_value_bool(txt, k, d))
+                        if ((v = LP_BOOL("fog", -1)) >= 0) fogForced = v;
+                        if ((v = LP_BOOL("snow", -1)) >= 0) { snowEnabled = v; snowForced = v; }
+                        if ((v = LP_BOOL("dither", -1)) >= 0) { dither = v; ditherForced = v; }
+                        if ((v = LP_BOOL("wobble", -1)) >= 0) { opts.ps1 = v; opts.linear = !v; psxForced = v; }
+                        if ((v = LP_BOOL("flashlight", -1)) >= 0) flashlightForced = v;
                     }
                     free(txt);
                 }
@@ -16722,6 +16818,32 @@ int main(int argc, char **argv) {
         if (camdatPath) g_lp_camdat_path = camdatPath;  /* audit A-D4 */
     }
 #endif /* LIVELY_PLAYER */
+
+    /* ---- optional standalone TIM viewer (S19: moved BEFORE input
+     * discovery — a TIM page needs no camdat/GLB; in the old order the
+     * camdat discovery's "cannot find camdat.json" exit fired first, so
+     * --tim-file on a lone .TIM (the extracted BG/TIM dirs) was dead
+     * on arrival even though the viewer itself is complete) ---- */
+    if (timFile) {
+        TimImage tim;
+        if (!tim_load(&tim, timFile)) {
+            fprintf(stderr, "cannot load TIM %s\n", timFile);
+            return 1;
+        }
+        printf("TIM %s: %dx%d, %d palettes\n", timFile, tim.w, tim.h, tim.clutCount);
+        Frame fb; frame_alloc(&fb, w, h);
+        blit_tim(&fb, &tim, timPalette);
+        char out[1024];
+        ensure_dir_simple(outdir);
+        snprintf(out, sizeof(out), "%s/tim_p%02d_%dx%d.png", outdir, timPalette, tim.w, tim.h);
+        if (!write_png_rgb(out, fb.rgb, fb.w, fb.h)) return 1;
+        printf("wrote %s\n", out);
+        if (timView >= 0) { /* --tim N used as palette selector here */ }
+        tim_free(&tim);
+        free(fb.rgb); free(fb.z);
+        return 0;
+    }
+
 
     /* ---- v8: --listmodes — the complete world-mode inventory ---- */
     if (listModes) {
@@ -16920,27 +17042,6 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
-    }
-
-    /* ---- optional standalone TIM viewer ---- */
-    if (timFile) {
-        TimImage tim;
-        if (!tim_load(&tim, timFile)) {
-            fprintf(stderr, "cannot load TIM %s\n", timFile);
-            return 1;
-        }
-        printf("TIM %s: %dx%d, %d palettes\n", timFile, tim.w, tim.h, tim.clutCount);
-        Frame fb; frame_alloc(&fb, w, h);
-        blit_tim(&fb, &tim, timPalette);
-        char out[1024];
-        ensure_dir_simple(outdir);
-        snprintf(out, sizeof(out), "%s/tim_p%02d_%dx%d.png", outdir, timPalette, tim.w, tim.h);
-        if (!write_png_rgb(out, fb.rgb, fb.w, fb.h)) return 1;
-        printf("wrote %s\n", out);
-        if (timView >= 0) { /* --tim N used as palette selector here */ }
-        tim_free(&tim);
-        free(fb.rgb); free(fb.z);
-        return 0;
     }
 
     /* ---- load the scene DIRECTLY from the GLB ---- */
