@@ -1,0 +1,33 @@
+{
+ "bug": "user-reported 'pop-in on THRF9FD' (not present on the original PoC)",
+ "repro_basis": "lively sh1-port engine, bundle 2.zip (v1.0.6, md5 59f98964), linux zig build + gcc plain",
+ "findings": [
+  {
+   "id": "F1",
+   "claim": "The wallpaper boot scene is NOT THRF9FD: camdat.json models[0] = APU0002.glb (hospital); the no-scene boot probes models[0].file first (v33.8 discovery order).",
+   "evidence": "wallpaper-boot t=1.5 render md5 == explicit APU0002 render md5 (5f8dff34); explicitly not THRF9FD (mean 52.71 vs THRF9FD frame)"
+  },
+  {
+   "id": "F2",
+   "claim": "The measured 'pop-in' (intensity pulse in the top-left band, t=4.0-4.75) exists IDENTICALLY in PoC v33.26 and the lively engine on identical argv.",
+   "evidence": "region means t=3.75..4.75: lively [43.53, 56.31, 75.79, 83.84, 59.49]; PoC [43.53, 56.31, 75.79, 83.84, 59.49] \u2014 identical to 0.01"
+  },
+  {
+   "id": "F3",
+   "claim": "The pulse is a camera-track sweep (pingPong line track passing a bright element), present in the deterministic --shot path too (not a realtime warm-up artifact).",
+   "evidence": "--shot t=4.25 region 75.79 == realtime value; region oscillates on an ~8-10s cycle across 30s [50,34,58,29,49,30,55,45]"
+  },
+  {
+   "id": "F4",
+   "claim": "THRF9FD itself (explicit --glb, full camdat) shows NO pop-in in EITHER engine: first 10 frames mean-diff < 6, big < 0.001; timeline t=0..5 stable (region 89->104).",
+   "evidence": "frame-by-frame first 8 ticks all big < 0.0009; t=0..5 all big < 0.001"
+  },
+  {
+   "id": "F5",
+   "claim": "A latent divergence channel exists (the camdat env weatherTarget=2 -> 512-tick sine cross-fade at boot, 17s ramp) but is NOT triggered in the default boot (envBootWeather=-1, no --weather-target; measured identical renders with env stripped vs present: mean 0.00).",
+   "evidence": "no-env vs full-env renders: mean 0.00 big 0.00000 at t=1.5/4.5/8.5"
+  }
+ ],
+ "verdict": "NOT a lively-port regression. The lively engine is bit-faithful to PoC v33.25-base on every measured path (md5-identical renders on identical argv). The 'pop-in' the user sees is engine-faithful PoC behavior (cam-track sweep pulse on the default APU0002 boot scene, or weather ramp if their copy selects it). No engine change proposed: changing it would break verbatim parity. The companion PoC-engine merge (v33.26) may change this behavior via the v43 fixes \u2014 recommend the user re-test after the merge PR lands.",
+ "recommended_action": "merge the PoC v33.26 engine (PR pending) and have the user re-test; if the pulse remains and is objectionable, file a PoC-side feature request (a boot-time skip/scrub), not an engine divergence"
+}
