@@ -63,7 +63,7 @@ p = subprocess.Popen(
     stderr=subprocess.DEVNULL, text=True, cwd=work)
 
 seen = {"hwnd": False, "loaded": False, "scene_switch": 0,
-        "defaults_reloaded": "", "rooms": [], "errors": 0}
+        "acks": [], "rooms": [], "errors": 0}
 
 
 def reader():
@@ -79,15 +79,15 @@ def reader():
             seen["hwnd"] = True
         elif t == 2 and '"Success":true' in line:
             seen["loaded"] = True
+        elif t == 1 and '"Category":1' in line:
+            seen["errors"] += 1          # error check FIRST (R4 hardening)
         elif t == 1 and "scene switched" in line:
             seen["scene_switch"] += 1
             m2 = re.search(r"scene switched: ([A-Za-z0-9_.-]+)", line)
             if m2:
                 seen["rooms"].append(m2.group(1))
         elif t == 1 and "defaults reloaded" in line:
-            seen["defaults_reloaded"] = line.strip()
-        elif t == 1 and '"Category":1' in line:
-            seen["errors"] += 1
+            seen["acks"].append(line.strip())
 
 
 t = threading.Thread(target=reader, daemon=True)
@@ -98,14 +98,15 @@ while not seen["loaded"] and time.time() < deadline and p.poll() is None:
     time.sleep(0.2)
 
 if not seen["loaded"]:
-    print("FATAL: msg_wploaded never arrived"); p.kill(); sys.exit(1)
+    print("FATAL: msg_wploaded never arrived")
+    p.kill(); shutil.rmtree(work, ignore_errors=True); sys.exit(1)
 
 def send(s):
     try:
         p.stdin.write(s + "\n"); p.stdin.flush()
     except (BrokenPipeError, OSError):
         print("FATAL: player exited before receiving:", s)
-        p.kill(); sys.exit(1)
+        p.kill(); shutil.rmtree(work, ignore_errors=True); sys.exit(1)
 
 send('{"Type":14,"Name":"scene","Value":33}')       # user: SU0203
 time.sleep(4)
@@ -114,6 +115,25 @@ time.sleep(1)
 shutil.copyfile(props_src, props)                   # the panel's pristine re-copy
 send('{"Type":16}')                                 # "Restore default"
 time.sleep(4)
+
+# R4-M4b discriminator: a hardcoded/lying ack cannot echo values it never
+# read. Rewrite the copy to a DIFFERENT state and send a second Type 16 —
+# the revert must now echo THOSE values (scene=SU0203 fog=0 fps=15) and
+# switch the room a THIRD time. Kills any constant-string ack mutant.
+with open(props, "r", encoding="utf-8") as f:
+    txt = f.read()
+txt2 = re.sub(r'("scene":\s*\{[^}]*"value":\s*)42', r'\g<1>33', txt, count=1)
+txt2 = re.sub(r'("fog":\s*\{[^}]*"value":\s*)true', r'\g<1>false', txt2, count=1)
+txt2 = re.sub(r'("fps":\s*\{[^}]*"value":\s*)30', r'\g<1>15', txt2, count=1)
+txt2 = re.sub(r'("envpair":\s*\{[^}]*"value":\s*)0', r'\g<1>3', txt2, count=1)
+if txt2 == txt:
+    print("FATAL: discriminator rewrite failed (bundle format drift?)")
+    p.kill(); shutil.rmtree(work, ignore_errors=True); sys.exit(1)
+with open(props, "w", encoding="utf-8") as f:
+    f.write(txt2)
+send('{"Type":16}')                                 # second revert
+time.sleep(4)
+
 send('{"Type":7}')                                  # suspend
 time.sleep(1)
 send('{"Type":8}')                                  # resume
@@ -133,21 +153,28 @@ t.join(timeout=5)   # drain the reader before the verdict
 print("hwnd:", seen["hwnd"], "| loaded:", seen["loaded"],
       "| scene_switch:", seen["scene_switch"],
       "| rooms:", seen["rooms"],
-      "| defaults_reloaded:", seen["defaults_reloaded"],
+      "| acks:", seen["acks"],
       "| errors:", seen["errors"],
       "| exit:", rc)
 
-# The exact rooms (SU0203 user switch, then the THRF9FE revert), EXACTLY
-# two switches, the ack echoing the staged slots (scene/fog/fps of the
-# pristine file), and zero Category:1 errors. A wrong-index or
-# partial-staging regression cannot pass.
+# Round 1: the exact rooms (SU0203 user switch, then the THRF9FE revert of
+# the pristine file) with the ack echoing the pristine staged slots.
+# Round 2 (the M4b discriminator): a THIRD switch back to SU0203 and the
+# second ack echoing the REWRITTEN values (fog=0 fps=15) — a hardcoded or
+# self-reporting ack cannot pass; only a revert that actually re-reads the
+# file can. Zero Category:1 errors, clean exit.
 ok = (seen["hwnd"] and seen["loaded"]
-      and seen["scene_switch"] == 2
-      and seen["rooms"] == ["SU0203", "THRF9FE"]
-      and "scene=THRF9FE" in seen["defaults_reloaded"]
-      and "fog=1" in seen["defaults_reloaded"]
-      and "fps=30" in seen["defaults_reloaded"]
-      and "env=camdat" in seen["defaults_reloaded"]
+      and seen["scene_switch"] == 3
+      and seen["rooms"] == ["SU0203", "THRF9FE", "SU0203"]
+      and len(seen["acks"]) == 2
+      and "scene=THRF9FE" in seen["acks"][0]
+      and "fog=1" in seen["acks"][0]
+      and "fps=30" in seen["acks"][0]
+      and "env=camdat" in seen["acks"][0]
+      and "scene=SU0203" in seen["acks"][1]
+      and "fog=0" in seen["acks"][1]
+      and "fps=15" in seen["acks"][1]
+      and "env=6,3" in seen["acks"][1]
       and seen["errors"] == 0
       and rc == 0)
 print("IPC16 TEST:", "PASS" if ok else "FAIL")

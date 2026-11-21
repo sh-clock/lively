@@ -16096,6 +16096,7 @@ static int run_window_x11(LiveApp *A) {
   #define LP_SEP "/"
 #endif
 
+
 #if !defined(_WIN32)
 /* ---- LP_POSIX_STUB: the minimal Win32-alike surface for the seam on  --
  * non-Win32 TEST builds only (the shipped exe is Windows; this whole
@@ -16387,6 +16388,15 @@ static const char *g_lp_props_path = NULL;
  * same graceful behaviour as the boot restore).                       */
 static void lp_reload_props_live(void) {
     if (!g_lp_props_path) return;
+    /* R4b-2: a FIFO/special-file path would BLOCK fopen forever — the
+     * stdin thread would hang and every later command (incl. Type 5 and
+     * EOF) would be lost. Only a regular file is a valid props copy
+     * (what the panel's File.Copy always produces).                          */
+    {
+        struct stat st;
+        if (stat(g_lp_props_path, &st) != 0 || !S_ISREG(st.st_mode))
+            return;   /* missing or non-regular: the silent no-op */
+    }
     FILE *pf = fopen(g_lp_props_path, "rb");
     if (!pf) return;
     long jsz = 0;
@@ -16440,16 +16450,19 @@ static void lp_reload_props_live(void) {
             }
         }
         if (envRead && !strcmp(envp, "camdat")) {
-            snprintf(ack_env, sizeof(ack_env), "%s", envp);  /* R3-D2 echo */
             g_lp_prop_pair0 = -2;   /* revert to the authored env (same
                                      * slot semantics as the live Type-14) */
             g_lp_prop_pair1 = -1;
-        } else if (envRead) {
             snprintf(ack_env, sizeof(ack_env), "%s", envp);  /* R3-D2 echo */
+        } else if (envRead) {
             int a = -1, b = -1;
             if (sscanf(envp, "%d,%d", &a, &b) == 2 &&
                 a >= 0 && a <= 20 && b >= 0 && b <= 20) {
                 g_lp_prop_pair0 = a; g_lp_prop_pair1 = b;
+                /* r4a-2: echo ONLY accepted values — the ack's comment
+                 * says "values actually staged", so a refused "99,99"
+                 * must NOT be echoed as if it had landed               */
+                snprintf(ack_env, sizeof(ack_env), "%s", envp);
             }
         }
     }
@@ -16744,12 +16757,20 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
          * restart path — load the new GLB, re-bind camdat, restart state */
         if (g_lp_scene_reload && g_lp_scene_new[0]) {
             g_lp_scene_reload = 0;
+            /* R4b-1: snapshot the requested room ONCE — the stdin thread
+             * may rewrite g_lp_scene_new while this load runs, so the
+             * path AND the 'scene switched: <ROOM>' report must speak of
+             * the SAME room (the one actually loaded), never a newer
+             * request that raced in (repro: alternating Type-14/16 at
+             * <25 ms spacing misreported loaded rooms).                    */
+            char req[LP_SCENE_MAX];
+            snprintf(req, sizeof(req), "%s", g_lp_scene_new);
             char path[512];
             snprintf(path, sizeof(path), "%s" LP_SEP "sh1" LP_SEP "%s.glb",
-                     lpInput ? lpInput : ".", g_lp_scene_new);
+                     lpInput ? lpInput : ".", req);
             if (!file_exists(path))
                 snprintf(path, sizeof(path), "%s" LP_SEP "%s.glb",
-                         lpInput ? lpInput : ".", g_lp_scene_new);
+                         lpInput ? lpInput : ".", req);
             Scene nsc;
             if (scene_load_glb(&nsc, path)) {
                 Camdat ncd;
@@ -16784,10 +16805,11 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                         A->R.snow = A->snow.enabled ? &A->snow : NULL;
                     }
                     {   /* audit R3-D1: carry the ROOM so a wrong-index
-                         * regression cannot pass as a bare success      */
+                         * regression cannot pass as a bare success;
+                         * R4b-1: report the SNAPSHOT (the room actually
+                         * loaded), not the possibly-raced live slot      */
                         char sm[128];
-                        snprintf(sm, sizeof(sm), "scene switched: %s",
-                                 g_lp_scene_new);
+                        snprintf(sm, sizeof(sm), "scene switched: %s", req);
                         lp_send_console(0, sm);
                     }
                 } else {
@@ -17703,7 +17725,12 @@ int main(int argc, char **argv) {
          * boot (the C# players' RestoreLivelyProperties parity — but for
          * a native player we read the plain JSON ourselves).              */
         if (g_lp_props_path && g_lp_scene_new[0] == 0) {
-            FILE *pf = fopen(g_lp_props_path, "rb");
+            /* R4b-2: the regular-file guard — a FIFO path would hang the
+             * boot BEFORE the Type:0 handshake (the wall never starts)   */
+            struct stat st;
+            FILE *pf = (stat(g_lp_props_path, &st) == 0 &&
+                        S_ISREG(st.st_mode))
+                           ? fopen(g_lp_props_path, "rb") : NULL;
             if (pf) {
                 long jsz = 0;
                 fseek(pf, 0, SEEK_END); jsz = ftell(pf); fseek(pf, 0, SEEK_SET);
@@ -17764,8 +17791,11 @@ int main(int argc, char **argv) {
         }
         /* apply checkbox defaults from the properties copy (fog/snow/..) */
         if (g_lp_props_path) {
+            struct stat st;   /* R4b-2: the regular-file guard, site 3    */
             long jsz = 0; char *txt = NULL;
-            FILE *pf = fopen(g_lp_props_path, "rb");
+            FILE *pf = (stat(g_lp_props_path, &st) == 0 &&
+                        S_ISREG(st.st_mode))
+                           ? fopen(g_lp_props_path, "rb") : NULL;
             if (pf) {
                 fseek(pf, 0, SEEK_END); jsz = ftell(pf); fseek(pf, 0, SEEK_SET);
                 if (jsz > 0 && jsz < 1 << 20) {

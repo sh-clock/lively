@@ -82,6 +82,8 @@ harness = r"""
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>   /* the extracted fn's R4b-2 regular-file guard */
 __HELPERS__
 
 /* ---- the seam slot statics, re-declared with the file's own types ---- */
