@@ -29,7 +29,10 @@ for r in range(CH):
         stp = 1 if c in (0, 15) else 0
         clut.append((stp << 15) | (rgb[2] << 10) | (rgb[1] << 5) | rgb[0])
 
-# pixel data: 4bpp -> 2 pixels per byte; width 8 => pw = 4 (16-bit units)
+# pixel data: 4bpp -> 2 pixels per byte; width 8 => pw = W/4 = 2
+# (16-bit units: 2 px/unit at 4bpp — the W//2 here was the 8BPP formula,
+#  making the engine read 16 px wide = 2x past the written pixel bytes;
+#  audit: ASAN heap-buffer-overflow READ in tim_load with the old form)
 pix = bytearray()
 for y in range(H):
     for x in range(0, W, 2):
@@ -39,7 +42,7 @@ for y in range(H):
 
 clut_bytes = struct.pack("<IHHHH", 12 + CW * CH * 2, 0, 0, CW, CH) + \
     b"".join(struct.pack("<H", v) for v in clut)
-pix_bytes = struct.pack("<IHHHH", 12 + len(pix), 0, 0, W // 2, H) + bytes(pix)
+pix_bytes = struct.pack("<IHHHH", 12 + len(pix), 0, 0, W // 4, H) + bytes(pix)
 
 data = struct.pack("<II", 0x10, 0x08) + clut_bytes + pix_bytes
 open(OUT, "wb").write(data)

@@ -134,6 +134,20 @@ int main(int argc, char **argv) {
     CHECK(lp_json_value_int(idxenv0, "envpair") == 0,
           "envpair index 0 = camdat (skip at boot)");
 
+    /* S19: the fps slider (nested "value", bundled default 30) + range
+     * shapes: the boot/live restore accepts 1..240; the bundled JSON
+     * carries fps:{"type":"slider","value":30,...} */
+    CHECK(lp_json_value_int(txt, "fps") == 30,
+          "nested fps slider value reads 30 (bundled default)");
+    const char *fpsflat = "{\"fps\":60}";
+    CHECK(lp_json_int(fpsflat, "fps") == 60, "flat fps (hand sender)");
+    const char *fps0 = "{\"fps\":{\"type\":\"slider\",\"value\":0}}";
+    CHECK(lp_json_value_int(fps0, "fps") == 0,
+          "fps 0 stays 0 (out-of-range -> default pacing at boot)");
+    const char *fpsbig = "{\"fps\":{\"type\":\"slider\",\"value\":300}}";
+    CHECK(lp_json_value_int(fpsbig, "fps") == 300,
+          "fps 300 reads 300 (caller clamps to 1..240)");
+
     printf(fails ? "NESTED PROPS TEST: FAIL (%d)\n" : "NESTED PROPS TEST: PASS\n", fails);
     return fails ? 1 : 0;
 }

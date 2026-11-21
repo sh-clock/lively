@@ -34,6 +34,13 @@ jobs:
           Add-Content $env:GITHUB_PATH $zigDir
           echo "zig staged at: $zigDir"
 
+      - name: "Workflow YAML sanity check (S19 fix5 class)"
+        shell: pwsh
+        run: |
+          pip install pyyaml --quiet
+          python tools/sh1_yaml_check.py
+          if ($LASTEXITCODE -ne 0) { throw "YAML CHECK FAILED" }
+
       - name: "Nested-props restore gate (S19 panel-schema fix)"
         shell: pwsh
         run: |

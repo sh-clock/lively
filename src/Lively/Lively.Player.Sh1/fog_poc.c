@@ -13317,9 +13317,17 @@ static int tim_load(TimImage *t, const char *path) {
         memcpy(&cw, d + p + 8, 2); memcpy(&ch, d + p + 10, 2);
         t->clutCount = ch;
         if (ch > 16) ch = t->clutCount = 16;
+        /* S19 audit: clamp CLUT reads to the bytes the block actually
+         * carries (blen incl. its own 12-byte header) — same malformed-
+         * file overread class as the pixel block below               */
+        size_t cavail = (blen > 12 && (size_t)blen - 12 <= (size_t)(len - p - 12))
+                            ? (size_t)blen - 12 : 0;
         for (int r = 0; r < ch; r++)
-            for (int c = 0; c < cw && c < 256; c++)
-                memcpy(&t->clut[r][c], d + p + 12 + (size_t)(r * cw + c) * 2, 2);
+            for (int c = 0; c < cw && c < 256; c++) {
+                size_t off = (size_t)(r * cw + c) * 2;
+                if (off + 2 > cavail) break;
+                memcpy(&t->clut[r][c], d + p + 12 + off, 2);
+            }
         p += blen;
     }
     uint32_t plen; memcpy(&plen, d + p, 4);
@@ -13329,6 +13337,21 @@ static int tim_load(TimImage *t, const char *path) {
     t->w = pw * (bpp == 4 ? 4 : 2);
     t->h = ph;
     t->indices = (uint8_t *)malloc((size_t)t->w * t->h);
+    /* S19 audit: a malformed/hostile .TIM can declare pw/ph beyond the
+     * bytes actually present (plen is the pixel-block length incl. the
+     * 12-byte header) — clamp the reads to the buffer or tim_load walks
+     * off the heap (ASAN: heap-buffer-overflow READ, 2 bytes at a time).
+     * bits available after the header: (plen - 12) bytes of 2 px/unit. */
+    {
+        size_t avail = (plen > 12 && (size_t)plen - 12 <= (size_t)(len - p - 12))
+                           ? (size_t)plen - 12
+                           : (size_t)(len > p + 12 ? len - p - 12 : 0);
+        size_t need = (size_t)pw * 2u * (size_t)t->h;
+        if (avail < need || !t->indices) {
+            free(d); free(t->indices); t->indices = NULL; t->w = t->h = 0;
+            return 0;   /* malformed pixel block — refuse the file      */
+        }
+    }
     for (int y = 0; y < t->h; y++) {
         for (int x = 0; x < t->w; x++) {
             size_t bit = (size_t)y * pw * 2 + (size_t)(x / (bpp == 4 ? 4 : 2)) * 2;
@@ -15751,6 +15774,107 @@ static void lp_send_console(int error, const char *msg) {
  * Android's seam did the same to logcat). fprintf(stderr,...) stays.   */
 #define printf(...) ((void)0)   /* chatter silenced; stderr untouched    */
 
+static const char *g_lp_glb_path = NULL;
+static const char *g_lp_camdat_path = NULL;
+static const char *g_lp_input_dir = NULL;
+static const char *g_lp_props_path = NULL;
+
+/* S19 audit D1: the panel's "Restore default" button (Type 16). The C#
+ * CustomiseWallpaperViewModel re-copies the PRISTINE LivelyProperties.json
+ * over the property copy BEFORE sending the message, then expects the
+ * wallpaper to revert live (the web players re-read the file). The native
+ * player must do the same: re-read the props file and stage EVERY value
+ * into its live slot — the same slots the boot restore and the Type
+ * 12/14/18 handlers write, so there is exactly one code path per value.
+ * Missing file / unparsable content = keep current state (no-op revert,
+ * same graceful behaviour as the boot restore).                       */
+static void lp_reload_props_live(void) {
+    if (!g_lp_props_path) return;
+    FILE *pf = fopen(g_lp_props_path, "rb");
+    if (!pf) return;
+    long jsz = 0;
+    fseek(pf, 0, SEEK_END); jsz = ftell(pf); fseek(pf, 0, SEEK_SET);
+    if (jsz <= 0 || jsz >= (1 << 20)) { fclose(pf); return; }
+    char *txt = (char *)malloc((size_t)jsz + 1);
+    if (!txt) { fclose(pf); return; }
+    if (fread(txt, 1, (size_t)jsz, pf) != (size_t)jsz) {
+        free(txt); fclose(pf); return;
+    }
+    txt[jsz] = 0;
+
+    int v;
+    if ((v = lp_json_bool(txt, "fog", -1)) < 0)
+        v = lp_json_value_bool(txt, "fog", -1);
+    if (v >= 0) g_lp_prop_fog = v;
+    if ((v = lp_json_bool(txt, "snow", -1)) < 0)
+        v = lp_json_value_bool(txt, "snow", -1);
+    if (v >= 0) g_lp_prop_snow = v;
+    if ((v = lp_json_bool(txt, "dither", -1)) < 0)
+        v = lp_json_value_bool(txt, "dither", -1);
+    if (v >= 0) g_lp_prop_dither = v;
+    if ((v = lp_json_bool(txt, "wobble", -1)) < 0)
+        v = lp_json_value_bool(txt, "wobble", -1);
+    if (v >= 0) g_lp_prop_wobble = v;
+    if ((v = lp_json_bool(txt, "flashlight", -1)) < 0)
+        v = lp_json_value_bool(txt, "flashlight", -1);
+    if (v >= 0) g_lp_prop_flashlight = v;
+    /* the fps present cap — flat first (hand senders), nested second (the
+     * panel schema), the same 1..240 the live Type-12 path accepts       */
+    if ((v = lp_json_int(txt, "fps")) < 1 || v > 240)
+        v = lp_json_value_int(txt, "fps");
+    if (v >= 1 && v <= 240) g_lp_fps_cap = v;
+    /* the env pair: "camdat" (or index 0) = revert to the authored env   */
+    {
+        char envp[32] = {0};
+        int envRead = lp_json_str(txt, "envpair", envp, sizeof(envp));
+        if (!envRead)
+            envRead = lp_json_value_str(txt, "envpair", envp, sizeof(envp));
+        if (!envRead) {
+            int eidx = lp_json_int(txt, "envpair");
+            if (eidx < 0) eidx = lp_json_value_int(txt, "envpair");
+            static const char *lp_env_items[] = {
+                "camdat", "1,1", "2,2", "6,3", "7,4",
+                "9,9", "13,13", "16,16"
+            };
+            if (eidx >= 0 && eidx < (int)(sizeof(lp_env_items)/sizeof(lp_env_items[0]))) {
+                snprintf(envp, sizeof(envp), "%s", lp_env_items[eidx]);
+                envRead = 1;
+            }
+        }
+        if (envRead && !strcmp(envp, "camdat")) {
+            g_lp_prop_pair0 = -2;   /* revert to the authored env (same
+                                     * slot semantics as the live Type-14) */
+            g_lp_prop_pair1 = -1;
+        } else if (envRead) {
+            int a = -1, b = -1;
+            if (sscanf(envp, "%d,%d", &a, &b) == 2 &&
+                a >= 0 && a <= 20 && b >= 0 && b <= 20) {
+                g_lp_prop_pair0 = a; g_lp_prop_pair1 = b;
+            }
+        }
+    }
+    /* the scene: a revert schedules the same full reload the live Type-14
+     * path uses (g_lp_scene_new + g_lp_scene_reload)                    */
+    {
+        char scene[LP_SCENE_MAX] = {0};
+        int idx = -1;
+        lp_json_str(txt, "scene", scene, sizeof(scene));
+        if (!scene[0]) lp_json_value_str(txt, "scene", scene, sizeof(scene));
+        if (!scene[0]) idx = lp_json_int(txt, "scene");
+        if (idx < 0) idx = lp_json_value_int(txt, "scene");
+        if (scene[0]) {
+            snprintf(g_lp_scene_new, LP_SCENE_MAX, "%s", scene);
+            g_lp_scene_reload = 1;
+        } else if (idx >= 0 && idx < LP_SCENE_COUNT) {
+            snprintf(g_lp_scene_new, LP_SCENE_MAX, "%s", g_lp_scenes[idx]);
+            g_lp_scene_reload = 1;
+        }
+    }
+    free(txt);
+    fclose(pf);
+    lp_send_console(0, "defaults reloaded from LivelyProperties.json");
+}
+
 /* -- IPC IN: the stdin command thread ---------------------------------- */
 static DWORD WINAPI lp_stdin_thread(LPVOID arg) {
     (void)arg;
@@ -15843,6 +15967,22 @@ static DWORD WINAPI lp_stdin_thread(LPVOID arg) {
                 }
                 break;
             }
+            case 16: { /* lp_button — the panel's "Restore default" button:
+                        * CustomiseWallpaperViewModel.cs re-copies the
+                        * PRISTINE LivelyProperties.json over the property
+                        * copy BEFORE sending this message, then expects the
+                        * wallpaper to revert (the web players re-read the
+                        * file). S19 audit D1: the native player ignored it,
+                        * so the engine kept the user's modified scene/env/
+                        * checkboxes/fps while the panel showed defaults —
+                        * state divergence until the next launch.
+                        * Re-read the (just-reverted) props file and stage
+                        * every value into its live slot — the SAME slots
+                        * the boot restore and the Type 12/14/18 handlers
+                        * write, so the revert uses one code path only.   */
+                lp_reload_props_live();
+                break;
+            }
             default: break;   /* unknown/unsupported: ignore, keep running */
             }
             n = 0;
@@ -15929,11 +16069,6 @@ static void lp_apply_props(LiveApp *A) {
         g_lp_prop_pair0 = -1; g_lp_prop_pair1 = -1;
     }
 }
-
-static const char *g_lp_glb_path = NULL;
-static const char *g_lp_camdat_path = NULL;
-static const char *g_lp_input_dir = NULL;
-static const char *g_lp_props_path = NULL;
 
 static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                              const char *lpCamdat, const char *lpInput,
@@ -16791,12 +16926,26 @@ int main(int argc, char **argv) {
                         if ((v = LP_BOOL("dither", -1)) >= 0) { dither = v; ditherForced = v; }
                         if ((v = LP_BOOL("wobble", -1)) >= 0) { opts.ps1 = v; opts.linear = !v; psxForced = v; }
                         if ((v = LP_BOOL("flashlight", -1)) >= 0) flashlightForced = v;
+                        /* S19 latent: the "Present cap (fps)" slider is a
+                         * NESTED "value" too — restore it at boot exactly
+                         * like the live lp_slider Type-12 does (g_lp_fps_cap
+                         * drives the present pacing at 16077). The bundled
+                         * LivelyProperties.json declares min 15/max 60/step 5;
+                         * accept the same 1..240 the live path does. Flat
+                         * first (hand senders), nested second — the same
+                         * flat-first order every sibling restore uses.      */
+                        if ((v = lp_json_int(txt, "fps")) < 1 || v > 240)
+                            v = lp_json_value_int(txt, "fps");
+                        if (v >= 1 && v <= 240)
+                            g_lp_fps_cap = v;
                     }
                     free(txt);
                 }
                 fclose(pf);
             }
         }
+        #undef LP_BOOL   /* audit B-D7: the macro was never undef'd — it
+                          * leaked past this block into the rest of the TU */
         /* the boot scene: <wallpaper-dir>\sh1\<SCENE>.glb (the bundle
          * layout), or <wallpaper-dir>\<SCENE>.glb (a plain import)      */
         if (g_lp_scene_new[0]) {
@@ -16835,7 +16984,12 @@ int main(int argc, char **argv) {
         blit_tim(&fb, &tim, timPalette);
         char out[1024];
         ensure_dir_simple(outdir);
-        snprintf(out, sizeof(out), "%s/tim_p%02d_%dx%d.png", outdir, timPalette, tim.w, tim.h);
+        snprintf(out, sizeof(out), "%s/tim_p%02d_%dx%d.png",
+                 outdir, timPalette, fb.w, fb.h);   /* S19 latent: the png name
+                                                     * reported the TIM's own
+                                                     * size, not the
+                                                     * framebuffer it renders
+                                                     * into (blit_tim scales) */
         if (!write_png_rgb(out, fb.rgb, fb.w, fb.h)) return 1;
         printf("wrote %s\n", out);
         if (timView >= 0) { /* --tim N used as palette selector here */ }
