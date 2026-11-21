@@ -75,7 +75,42 @@ if os.path.isfile(bundle):
         if '"Type": "sh1"' not in info and '"Type":"sh1"' not in info:
             missing.append(("2.zip:LivelyInfo.json Type",
                             "must be sh1"))
-    print(f"  OK  2.zip internals: {len(glbs)} GLBs + camdat.json + "
+
+        # V42 (audit E-7): FRESHNESS — the internals check above only proves the
+        # zip is well-formed, not that it matches the source bundle dir. A fix in
+        # bundle/wallpapers/sh1-wallpaper/ without a repack (exactly the E-3
+        # camdat regression class) would still release green. Byte-compare every
+        # sh1-wallpaper/ entry against the repo's source dir.
+        src_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "bundle", "wallpapers", "sh1-wallpaper")
+        if os.path.isdir(src_root):
+            import hashlib
+            stale, absent = [], []
+            src_files = {}
+            for dirpath, _, filenames in os.walk(src_root):
+                for fn in filenames:
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, src_root).replace(os.sep, "/")
+                    src_files[rel] = full
+            for rel, full in sorted(src_files.items()):
+                entry = "sh1-wallpaper/" + rel
+                if entry not in names:
+                    absent.append(entry)
+                    continue
+                if hashlib.sha1(z.read(entry)).hexdigest() != \
+                   hashlib.sha1(open(full, "rb").read()).hexdigest():
+                    stale.append(entry)
+            if absent or stale:
+                for e in absent:
+                    missing.append((f"2.zip:{e}",
+                                    "in the source bundle dir but NOT in the shipped zip — repack 2.zip"))
+                for e in stale:
+                    missing.append((f"2.zip:{e}",
+                                    "zip content is STALE vs the source bundle dir — repack 2.zip (E-7)"))
+            else:
+                print(f"  OK  2.zip freshness: all {len(src_files)} entries byte-identical "
+                      f"to bundle/wallpapers/sh1-wallpaper/ (E-7 guard)")
+        print(f"  OK  2.zip internals: {len(glbs)} GLBs + camdat.json + "
           f"LivelyInfo/Properties under sh1-wallpaper/sh1/ (S18 guard)")
 
 # The UI publish must bring its runtime (self-contained): check the .dll row
