@@ -16203,6 +16203,7 @@ static volatile int g_lp_fps_cap = 0;   /* lp_slider "fps" (0 = default) */
 
 /* -- the property request slots (consumed on the render frame ---------- */
 #define LP_SCENE_MAX 32
+static int g_lp_boot_weather_target = -1;   /* S20 F5: the boot-resolved weather target; the live scene switch re-arms it (V42 D-1 parity) */
 static char g_lp_scene_new[LP_SCENE_MAX] = {0};   /* "" = no request     */
 static volatile int g_lp_scene_reload = 0;
 static int  g_lp_prop_fog = -1, g_lp_prop_snow = -1;
@@ -16803,6 +16804,55 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                             snow_reset(&A->snow);
                         }
                         A->R.snow = A->snow.enabled ? &A->snow : NULL;
+                    }
+                    /* S20 audit F5: the room-reload resets the K_R path
+                     * (fog_poc.c:15440-15527) and the fresh boot run on
+                     * EVERY map load — the live scene switch is a map
+                     * load (scene_load_glb + camdat re-bind) and must
+                     * mirror them, else the switched room inherits the
+                     * previous room's water/anims/flare state:
+                     *  - snowDensitySel re-sync (particle.c:396-400: the
+                     *    SystemUpdate case-0 arm sets field_2349/2348 =
+                     *    MapOverlayHdr.field_17 on every map load);
+                     *  - the boot weatherTarget cross-fade re-arm (V42
+                     *    D-1: K_R re-arms it; the switch must too);
+                     *  - the fresh-session env fade + the dt=0 prime
+                     *    (v41-ENGFX 3b);
+                     *  - the v38/v41-E2/E3 fresh-load six-globals +
+                     *    the ripple spawn (audit A-3: Map_WorldObjectsInit
+                     *    -> func_800CB0D8 re-runs on every map load);
+                     *  - animsPrimed re-prime (the new Scene's gate
+                     *    state must be computed before the first frame).
+                     * The ripple spawn runs AFTER sh1x_anims_reset (the
+                     * fresh-load order: the anims reset restores the
+                     * parse-fresh RNG stream, then the spawn consumes
+                     * it) — same order as the K_R site.                       */
+                    {
+                        Scene *ns = (Scene *)A->R.sc;
+                        if (ns->sh1x.hasEnv && ns->sh1x.envField17 >= 0)
+                            A->snow.snowDensitySel = ns->sh1x.envField17;
+                        else
+                            A->snow.snowDensitySel = 0;
+                        if (g_lp_boot_weather_target >= 0)
+                            sh_particle_weather_target_set(&A->snow,
+                                                           g_lp_boot_weather_target);
+                        A->env.flashlightIntensity = 0;
+                        sh_env_reset(&A->env, 0.0);
+                        {
+                            Quat q0 = quat_id();
+                            v3 p0 = { 0.0f, 0.0f, 0.0f };
+                            sh_env_tick(&A->env, 0, p0, q0); /* dt=0 prime */
+                        }
+                        sh1x_anims_reset((Sh1x *)&ns->sh1x);
+                        sh1x_anims_bind_invalidate();
+                        A->animsPrimed = 0;
+                        g_propRngSeed = 1u;
+                        g_flaresys.counter = 0;
+                        g_waterTileEverUpdated = 0;
+                        g_sh1xBeltScroll = 0;
+                        g_tvpaint_pad = 0;
+                        g_flaresys.nowEffRate = 0;
+                        sh1x_water_ripple_spawn((Sh1x *)&ns->sh1x);
                     }
                     {   /* audit R3-D1: carry the ROOM so a wrong-index
                          * regression cannot pass as a bare success;
@@ -18607,6 +18657,9 @@ int main(int argc, char **argv) {
      * so the boot call is accepted exactly like the engine's map event).
      * The full 0..8 argument range is exposed (the shipped game only ever
      * calls D0B18(6) — its snow->rain street event). */
+    #ifdef LIVELY_PLAYER
+    g_lp_boot_weather_target = bootWeatherTarget;  /* S20 F5: kept for the switch re-arm */
+#endif
     if (bootWeatherTarget >= 0) {
         if (sh_particle_weather_target_set(&A.snow, bootWeatherTarget)) {
             printf("[weather] boot sharedFunc_800D0B18(%d) — sine cross-fade "
