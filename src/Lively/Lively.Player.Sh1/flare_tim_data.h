@@ -6,7 +6,8 @@
  * Ground truth (decomp lens_flare.c): sprites are POLY_FT4 tpage 44/76
  * sampling BG_ETC sheet windows with CLUT rows at VRAM (192,5/6/7)
  * NTSC. Core 64x64 clut+6; streaks 32x32 clut+5; ghosts 64x64 clut+7
- * (+ghost3 64x64 clut+6 tpage 76). All SemiTrans mode-1.
+ * (+ghost3 64x64 clut+6 tpage 76). All SemiTrans mode-1 except ghost3
+ * (tpage 76) = ABR 2 (B-F).
  * ==================================================================== */
 #ifndef FOG_POC_FLARE_TIM_DATA_H
 #define FOG_POC_FLARE_TIM_DATA_H
