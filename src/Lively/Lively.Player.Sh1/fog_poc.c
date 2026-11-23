@@ -18922,6 +18922,15 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                             v3 p0 = { 0.0f, 0.0f, 0.0f };
                             sh_env_tick(&A->env, 0, p0, q0); /* dt=0 prime */
                         }
+                        /* w5-audit (A7-7): the v43 E-07-1 un-prime — the
+                         * dt=0 frame is not a 30Hz grid slot (boot
+                         * :20902 / K_R :17114 both carry it). Without it
+                         * every switched room runs one env tick behind
+                         * AND skips the ticksDone==0 boot-frame light pose
+                         * (the REAL camera's anchor) — with V49's ONE
+                         * light, both lights sit at the identity-camera
+                         * pose for the first ~2/30 s. */
+                        A->env.ticksDone = 0;
                         sh1x_anims_reset((Sh1x *)&ns->sh1x);
                         sh1x_anims_bind_invalidate();
                         A->animsPrimed = 0;
