@@ -18667,6 +18667,67 @@ static LRESULT CALLBACK lp_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_lp_app) win32_present(hwnd, g_lp_app);
         return 0;
     }
+    /* w5-audit (A7-4): the live_wndproc key arm (17527-17583) ported to
+     * the seam window — the V49 runtime USER LIGHT keys (and every other
+     * live_action key) were unreachable here: no WM_KEYDOWN handling, no
+     * panel substitute for the light surface. Same VK map, the lp quit
+     * convention (g_lp_quit, not DestroyWindow). */
+    if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && g_lp_app) {
+        LiveKey k = K_NONE;
+        switch ((int)wp) {
+        case VK_ESCAPE:   k = K_ESC;   break;
+        case 'Q':         k = K_QUIT;  break;
+        case VK_SPACE:    k = K_SPACE; break;
+        case 'R':         k = K_R;     break;
+        case 'F':         k = K_F;     break;
+        case 'M':         k = K_M;     break;
+        case 'B':         k = K_B;     break;
+        case 'P':         k = K_P;     break;
+        case 'D':         k = K_D;     break;
+        case 'N':         k = K_N;     break;
+        case 'S':         k = K_S;     break;
+        case 'W':         k = K_W;     break;
+        case 'L':         k = K_L;     break;
+        case VK_LEFT:     k = K_LEFT;  break;
+        case VK_RIGHT:    k = K_RIGHT; break;
+        case VK_OEM_PLUS: case VK_ADD:       k = K_PLUS;  break;
+        case VK_OEM_MINUS: case VK_SUBTRACT: k = K_MINUS; break;
+        case VK_TAB:      k = K_TAB;   break;
+        case VK_UP:       k = K_UP;    break;
+        case VK_DOWN:     k = K_DOWN;  break;
+        case VK_RETURN:   k = K_ENTER; break;
+        case VK_OEM_4:    k = K_LBRK;  break;
+        case VK_OEM_6:    k = K_RBRK;  break;
+        case VK_OEM_COMMA:  k = K_COMMA;  break;
+        case VK_OEM_PERIOD: k = K_PERIOD; break;
+        case 'H':         k = K_H;     break;
+        case 'Y':         k = K_R2TOGGLE; break;
+        case 'I':         k = K_LFWD;   break;
+        case 'K':         k = K_LBACK;  break;
+        case 'J':         k = K_LLEFT;  break;
+        case 'O':         k = K_LRIGHT; break;
+        case 'U':         k = K_LUP;    break;
+        case 'C':         k = K_LDOWN;  break;
+        case 'T':         k = K_LPITUP; break;
+        case 'G':         k = K_LPITDN; break;
+        case 'A':         k = K_LYAWL;  break;
+        case 'E':         k = K_LYAWR;  break;
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+            k = (LiveKey)(K_D0 + ((int)wp - '0'));
+            break;
+        default:
+            if ((int)wp >= 'A' && (int)wp <= 'Z' &&
+                (int)wp == g_r2_viewkey) k = K_VIEW;
+            break;
+        }
+        if (k != K_NONE &&
+            live_action(g_lp_app, k, msg == WM_KEYDOWN ? 1 : 0)) {
+            g_lp_quit = 1;
+            PostQuitMessage(0);
+        }
+        return 0;
+    }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
