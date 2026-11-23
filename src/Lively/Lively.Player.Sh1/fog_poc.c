@@ -17604,6 +17604,32 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                     sh1x_anims_reset((Sh1x *)&((Scene *)A->R.sc)->sh1x);
                     turn_init(&A->play.turn);
                     A->tickPending = 0;               /* audit A-D6 */
+                    /* S25 audit D-6: Snow.sc pointed at the freed old scene
+                     * (snow_init runs only at boot) and the ground grid gh
+                     * still described the OLD room — flakes rest on the
+                     * previous room's collision surface. snow_init is the
+                     * engine's map-load SnowInitialize (SnowInit: sc bind +
+                     * snow_ground_build over the NEW scene + datum from the
+                     * NEW track; boot site fog_poc.c:19386) — re-run it
+                     * against the swapped scene/track exactly like a fresh
+                     * load. (The rebuilt gh uses A.env.datumM's boot value;
+                     * the boot site refreshes it from the new track right
+                     * after snow_init — mirrored below.)                     */
+                    snow_init(&A->snow, (Scene *)A->R.sc, A->track);
+                    A->env.datumM = A->snow.datumM;
+                    /* S25 audit D-1/D-5: K_R re-syncs the SystemUpdate
+                     * case-0 weather arm UNCONDITIONALLY (15951-15955:
+                     * weatherTick=0, transitionLock=1, weatherCurrent=
+                     * weatherTarget=weatherBits, weatherSettings=bits>>12)
+                     * and re-seeds snow unconditionally (15968). The old
+                     * switch skipped the whole arm when envField17==2
+                     * (THRF9FD-class rooms) — a live cross-fade carried
+                     * into the new room. The env-set recipe still runs
+                     * under the fresh-boot guard (field17>=0 && !=2, the
+                     * same guard boot's GLB arm uses at 19418-19421), but
+                     * the case-0 re-sync + snow_reset now run ALWAYS.     */
+                    A->snow.weatherTick = 0;
+                    A->snow.transitionLock = 1;
                     {
                         Scene *ns = (Scene *)A->R.sc; Camdat *nc = (Camdat *)A->cd;
                         int a = -1, b = -1;
@@ -17613,9 +17639,13 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                         if (ns->sh1x.hasEnv && ns->sh1x.envField17 >= 0 &&
                             ns->sh1x.envField17 != 2) {
                             particle_environment_set(&A->snow, ns->sh1x.envField17, 1);
-                            A->snow.snowTypeEnable = 1; A->snow.transitionLock = 1;
-                            snow_reset(&A->snow);
+                            A->snow.snowTypeEnable = 1;
                         }
+                        /* K_R parity: the case-0 arm's re-sync, always */
+                        A->snow.weatherCurrent = A->snow.weatherBits;
+                        A->snow.weatherTarget = A->snow.weatherBits;
+                        A->snow.weatherSettings = (uint16_t)(A->snow.weatherBits >> 12);
+                        snow_reset(&A->snow);
                         A->R.snow = A->snow.enabled ? &A->snow : NULL;
                     }
                     /* S20 audit F5: the room-reload resets the K_R path
@@ -17642,13 +17672,31 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                      * it) — same order as the K_R site.                       */
                     {
                         Scene *ns = (Scene *)A->R.sc;
+                        Camdat *nc = (Camdat *)A->cd;
                         if (ns->sh1x.hasEnv && ns->sh1x.envField17 >= 0)
                             A->snow.snowDensitySel = ns->sh1x.envField17;
                         else
                             A->snow.snowDensitySel = 0;
-                        if (g_lp_boot_weather_target >= 0)
-                            sh_particle_weather_target_set(&A->snow,
-                                                           g_lp_boot_weather_target);
+                        /* S25 audit D-3: the old switch re-armed the stale
+                         * BOOT-time g_lp_boot_weather_target — but the boot
+                         * resolution chain (CLI --weather-target > the ACTIVE
+                         * TRACK's weatherTarget (19040) > the camdat
+                         * models[0].env.weatherTarget (19059)) must be
+                         * re-derived against the NEW camdat + the NEW
+                         * active track, exactly as a fresh boot would.
+                         * g_lp_boot_weather_target (the CLI arm) still
+                         * wins; the track/camdat arms are re-read from
+                         * the swapped bindings.                            */
+                        {
+                            int wt = g_lp_boot_weather_target;
+                            CamTrack *ntrk = &nc->tracks[nc->activeTrack];
+                            if (wt < 0 && ntrk->weatherTarget >= 0)
+                                wt = ntrk->weatherTarget;
+                            if (wt < 0 && nc->hasEnv && nc->envWeatherTarget >= 0)
+                                wt = nc->envWeatherTarget;
+                            if (wt >= 0)
+                                sh_particle_weather_target_set(&A->snow, wt);
+                        }
                         A->env.flashlightIntensity = 0;
                         sh_env_reset(&A->env, 0.0);
                         {
