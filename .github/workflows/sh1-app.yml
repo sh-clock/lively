@@ -1,0 +1,181 @@
+name: sh1-app-ci
+
+on:
+  push:
+    branches: [core-separation, sh1-port]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # the build publishes the app ZIP as RELEASE ASSETS
+
+concurrency:
+  group: sh1-app-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ipc16-gate:
+    # S19 finisher: the Type-16 "Restore default" round-trip on the LINUX
+    # LP_POSIX_STUB build of the seam (zig cc -DLIVELY_PLAYER; the stub
+    # never ships — the Windows exe is the release artifact). Proves the
+    # full panel contract: handshake -> scene switch -> fog off -> pristine
+    # re-copy -> {"Type":16} -> revert (2nd scene switched + defaults
+    # reloaded) -> suspend/resume -> clean exit.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Zig
+        run: |
+          curl -sfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o zig.tar.xz
+          tar xf zig.tar.xz
+          mv zig-linux-x86_64-0.13.0 zig
+          echo "$PWD/zig" >> $GITHUB_PATH
+      - name: IPC16 round-trip gate (Type-16 restore-default)
+        run: |
+          python3 tools/sh1_ipc16_test.py
+
+  build:
+    needs: ipc16-gate   # a red Type-16 gate must BLOCK the release upload
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Zig (the player cross-toolchain)
+        run: |
+          curl -sfL https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip -o zig.zip
+          Expand-Archive -Path zig.zip -DestinationPath "$env:RUNNER_TEMP" -Force
+          $zig = Get-ChildItem "$env:RUNNER_TEMP" -Recurse -Filter zig.exe | Select-Object -First 1
+          $zigDir = Split-Path $zig.FullName
+          Add-Content $env:GITHUB_PATH $zigDir
+          echo "zig staged at: $zigDir"
+
+      - name: "Workflow YAML sanity check (S19 fix5 class)"
+        shell: pwsh
+        run: |
+          pip install pyyaml --quiet
+          python tools/sh1_yaml_check.py
+          if ($LASTEXITCODE -ne 0) { throw "YAML CHECK FAILED" }
+
+      - name: "Nested-props restore gate (S19 panel-schema fix)"
+        shell: pwsh
+        run: |
+          $env:CC = 'zig cc -target x86_64-windows-gnu'
+          python tools/sh1_nested_props_test.py
+          if ($LASTEXITCODE -ne 0) { throw "NESTED PROPS TEST FAILED" }
+
+      - name: "Type-16 restore-default logic gate (the lp_reload_props_live harness)"
+        shell: pwsh
+        run: |
+          $env:CC = 'zig cc -target x86_64-windows-gnu'
+          python tools/sh1_type16_logic_test.py
+          if ($LASTEXITCODE -ne 0) { throw "TYPE16 LOGIC TEST FAILED" }
+
+      - name: "TIM viewer gate (S19 tim-file needs no camdat/GLB)"
+        shell: pwsh
+        run: |
+          zig cc -target x86_64-windows-gnu -O2 -o fog_gate.exe src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
+          python tools/sh1_tim_fixture.py
+          ./fog_gate.exe --tim-file sh1_fixture.TIM --out tim_out
+          if ($LASTEXITCODE -ne 0) { throw "TIM VIEWER FAILED" }
+          $png = Get-ChildItem 'tim_out/*.png'
+          if (-not $png) { throw "TIM PNG MISSING" }
+
+      - name: Build the SH1 native player (the LIVELY_PLAYER seam)
+        run: |
+          zig cc -target x86_64-windows-gnu -O2 -std=c99 -DLIVELY_PLAYER `
+            -o Lively.Player.Sh1.exe `
+            src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
+          Get-Item Lively.Player.Sh1.exe | Select-Object Length
+          zig version
+
+      - name: Build the Lively app core (with the sh1 integration)
+        run: |
+          dotnet publish src/Lively/Lively/Lively.csproj -c Release `
+            -p:EnableWindowsTargeting=true -p:Platform=x64 -p:SelfContained=true `
+            -p:RuntimeIdentifier=win-x64 `
+            -o publish --nologo -v q
+          if (!(Test-Path publish/Lively.exe)) { throw "Lively.exe missing" }
+
+      - name: Build the Lively UI (plugins\UI — the process the core launches on startup)
+        run: |
+          dotnet publish src/Lively/Lively.UI.WinUI/Lively.UI.WinUI.csproj -c Release `
+            -p:EnableWindowsTargeting=true -p:Platform=x64 -p:SelfContained=true `
+            -p:RuntimeIdentifier=win-x64 `
+            -o publish/plugins/UI --nologo -v q
+          if (!(Test-Path "publish/plugins/UI/Lively.UI.WinUI.exe")) { throw "UI exe missing" }
+
+      - name: Build the Watchdog (net472; Plugins\Watchdog\Lively.Watchdog — no extension)
+        run: |
+          # Reference assemblies so net472 builds without the Windows SDK targeting pack
+          dotnet build src/Lively/Lively.Utility.Watchdog/Lively.Utility.Watchdog.csproj `
+            -c Release -p:EnableWindowsTargeting=true --nologo -v q
+          New-Item -ItemType Directory -Force -Path publish/Plugins/Watchdog | Out-Null
+          Copy-Item src/Lively/Lively.Utility.Watchdog/bin/Release/Lively.Utility.Watchdog.exe `
+            publish/Plugins/Watchdog/Lively.Watchdog
+          if (!(Test-Path "publish/Plugins/Watchdog/Lively.Watchdog")) { throw "Watchdog missing" }
+
+      - name: Stage the SH1 player + bundle
+        run: |
+          New-Item -ItemType Directory -Force -Path publish/plugins/sh1 | Out-Null
+          Copy-Item Lively.Player.Sh1.exe publish/plugins/sh1/
+          New-Item -ItemType Directory -Force -Path publish/bundle/wallpapers | Out-Null
+          Copy-Item bundle/wallpapers/2.zip publish/bundle/wallpapers/
+
+      - name: Layout completeness audit (the v1.0.0 bug class)
+        run: |
+          python tools/sh1_layout_audit.py publish
+          if ($LASTEXITCODE -ne 0) { throw "LAYOUT AUDIT FAILED" }
+
+      - name: Real-user IPC test (the app's own contract against the player exe)
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pillow
+          python tools/sh1_ipc_test.py
+          if ($LASTEXITCODE -ne 0) { throw "IPC TEST FAILED" }
+
+      - name: "Type-16 restore-default IPC test (the panel button, end-to-end)"
+        shell: pwsh
+        run: |
+          python tools/sh1_type16_ipc_test.py
+          if ($LASTEXITCODE -ne 0) { throw "TYPE16 IPC TEST FAILED" }
+
+      - name: Regression gates (the engine renders + moves + the water flows)
+        shell: pwsh
+        run: |
+          zig cc -target x86_64-windows-gnu -O2 -std=c99 `
+            -o fog_gate.exe src/Lively/Lively.Player.Sh1/fog_poc.c -luser32 -lgdi32
+          ./fog_gate.exe --glb bundle/wallpapers/sh1-wallpaper/sh1/THRF9FD.glb `
+              --camdat bundle/wallpapers/sh1-wallpaper/sh1/camdat.json `
+              --input bundle/wallpapers/sh1-wallpaper/sh1 `
+              --night --flashlight --benchmark 60 --fps 30 `
+              --save-final wp_a.png
+          ./fog_gate.exe --glb bundle/wallpapers/sh1-wallpaper/sh1/SU0203.glb `
+              --camdat bundle/wallpapers/sh1-wallpaper/sh1/camdat.json `
+              --input bundle/wallpapers/sh1-wallpaper/sh1 `
+              --shot t=1.5,file=s1.png --shot t=2.5,file=s2.png
+          ./fog_gate.exe --glb bundle/wallpapers/sh1-wallpaper/sh1/SUFFFE.glb `
+              --camdat bundle/wallpapers/sh1-wallpaper/sh1/camdat.json `
+              --input bundle/wallpapers/sh1-wallpaper/sh1 `
+              --shot t=6,file=w1.png --shot t=6.2,file=w2.png
+          python tools/sh1_gates.py bundle/wallpapers/sh1-wallpaper
+          if ($LASTEXITCODE -ne 0) { throw "GATES FAILED" }
+
+      - name: Package the app ZIP
+        run: |
+          Compress-Archive -Path publish/* -DestinationPath "lively-sh1-$env:GITHUB_REF_NAME.zip" -Force
+          Get-Item "lively-sh1-$env:GITHUB_REF_NAME.zip" | Select-Object Length
+
+      - name: Upload release asset (tag pushes)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: lively-sh1-*.zip

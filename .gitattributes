@@ -1,0 +1,11 @@
+# Byte-exact checkouts everywhere. The repo's content is authored/stored
+# LF; the Windows CI runners default core.autocrlf=true which smudges text
+# files to CRLF on checkout. That broke the 2.zip freshness gate (the E-7
+# byte-compare reads binary-mode: the zip's LF LivelyInfo/LivelyProperties/
+# camdat entries vs the CRLF'd loose files -> false "STALE"). With * -text
+# git performs NO conversion on checkout or commit: the loose bundle files
+# equal the zip bytes byte-for-byte on every platform, the python text-mode
+# readers are unaffected (LF content), and the engine/tools see exactly the
+# bytes that were audited. Binary files (2.zip, *.glb, *.png) are of course
+# never converted. Do NOT remove: the layout audit's E-7 gate depends on it.
+* -text

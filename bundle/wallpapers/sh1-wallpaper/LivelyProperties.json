@@ -1,0 +1,64 @@
+{
+  "scene": {
+    "type": "dropdown",
+    "value": 42,
+    "text": "Scene",
+    "items": [
+      "APU0002", "APU00FF", "APUFFFE", "DR0000", "DR0100", "DRFD00", "DRU0100",
+      "ER00FE", "ER01FC", "ER01FE", "ER0201", "ER02FC", "ER0301", "ER03FD",
+      "ER0401", "ERFCFC", "ERFDFE", "ERFDFF", "ERFFFF", "HP0003", "HP0100",
+      "HU0001", "HU0103", "HU01FF", "SCFD00", "SCFE00", "SPU0100", "SPU0301",
+      "SPU03FD", "SPU0401", "SU0001", "SU00FF", "SU01FE", "SU0203", "SUFE00",
+      "SUFFFE", "SUFFFF", "THR05FE", "THRF905", "THRF906", "THRF9FC",
+      "THRF9FD", "THRF9FE", "THRFE08"
+    ]
+  },
+  "envpair": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Environment pair (Gfx_MapEnvSet)",
+    "items": [
+      "camdat",
+      "1,1",
+      "2,2",
+      "6,3",
+      "7,4",
+      "9,9",
+      "13,13",
+      "16,16"
+    ]
+  },
+  "fog": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Engine fog"
+  },
+  "flashlight": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Harry's flashlight"
+  },
+  "snow": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Snow particles"
+  },
+  "dither": {
+    "type": "checkbox",
+    "value": true,
+    "text": "PSX dither (15-bit)"
+  },
+  "wobble": {
+    "type": "checkbox",
+    "value": true,
+    "text": "PSX vertex wobble"
+  },
+  "fps": {
+    "type": "slider",
+    "value": 30,
+    "text": "Present cap (fps)",
+    "min": 15,
+    "max": 60,
+    "step": 5
+  }
+}

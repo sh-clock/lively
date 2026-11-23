@@ -53,6 +53,10 @@ public enum WallpaperType
     /// Static picture wallpaper.
     /// </summary>
     picture,
+    /// <summary>
+    /// Silent Hill 1 fog-engine wallpaper (the bundled native Lively.Player.Sh1).
+    /// </summary>
+    sh1,
     /*
     /// <summary>
     /// Animated sequence in HEIC file format (currently commented out).

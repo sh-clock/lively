@@ -1,0 +1,8 @@
+<Project>
+  <!-- net472 builds on any machine/CI: reference assemblies via NuGet
+       (the Windows targeting pack is not needed). CI-only convenience;
+       harmless on a dev box with VS (same package wins). -->
+  <ItemGroup Condition="'$(TargetFrameworkVersion)' == 'v4.7.2'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

@@ -56,6 +56,8 @@ namespace Lively.Common
             public static string VlcPath { get; } = Path.Combine(VlcDir, "vlc.exe");
             public static string LibVlcDir { get; } = Path.Combine("plugins", "libvlc");
             public static string LibVlcPath { get; } = Path.Combine(LibVlcDir, "Lively.Player.Vlc.exe");
+            public static string Sh1Dir { get; } = Path.Combine("plugins", "sh1");
+            public static string Sh1Path { get; } = Path.Combine(Sh1Dir, "Lively.Player.Sh1.exe");
             //public static string LibVlcExtDir { get; } = Path.Combine("plugins", "libVLCPlayer");
             //public static string LibVlcExtPath { get; } = Path.Combine(LibVlcExtDir, "libVLCPlayer.exe");
             //public static string LibMpvExtDir { get; } = Path.Combine("plugins", "libMPVPlayer");
