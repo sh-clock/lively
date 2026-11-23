@@ -18970,6 +18970,11 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                          * (the CLI keeps precedence via g_userLightCLI;
                          * the GLB rot rides !g_userLightHasRot).          */
                         if (!g_userLightCLI) {
+                            /* w5-audit (A7-1): fresh-boot parity — the
+                             * static g_userLightLine starts 0; the switch
+                             * must clear room A's line before the new
+                             * room's fold decides. */
+                            g_userLightLine = 0;
                             if (nc->hasLight) {
                                 g_userLightMode = nc->lightFollow ? 1 : 0;
                                 if (nc->lightFollow == 1) {
@@ -18985,6 +18990,13 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                                     g_userLightRot[0] = nc->lightRot[0];
                                     g_userLightRot[1] = nc->lightRot[1];
                                     g_userLightRot[2] = nc->lightRot[2];
+                                } else {
+                                    /* w5-audit (A7-3): a stale rot from
+                                     * room A must not survive (it also
+                                     * suppressed B's GLB userLightRot at
+                                     * the !HasRot guard) — the offset
+                                     * twin's else pattern. */
+                                    g_userLightHasRot = 0;
                                 }
                                 /* re-audit: the boot fold also writes the
                                  * OFFSET (hasLightOffset/lightOffset) — the
@@ -18998,6 +19010,25 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                                 } else {
                                     g_userLightHasOffset = 0;
                                 }
+                                /* w5-audit (A7-1): the V49 LINE light —
+                                 * the boot fold arms it per room
+                                 * (fog_poc.c:20673-20686); the switch
+                                 * never re-folded it: room A's travel
+                                 * carried into room B and B's own line
+                                 * never armed. */
+                                if (nc->lightLine) {
+                                    g_userLightMode = 1;
+                                    g_userLightLine = 1;
+                                    g_userLightLineT = 0.0;
+                                    memcpy(g_userLightLineStart,
+                                           nc->lightLineStart,
+                                           sizeof(float) * 3);
+                                    memcpy(g_userLightLineEnd,
+                                           nc->lightLineEnd,
+                                           sizeof(float) * 3);
+                                    g_userLightLineSpeedMS = nc->lightLineSpeedMS;
+                                    g_userLightLineLoop = nc->lightLineLoop;
+                                }
                             } else {
                                 /* re-audit: NO reset when the new camdat
                                  * has no light block — A(light)->B(none)
@@ -19010,13 +19041,26 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                                 g_userLightHasRot = 0;
                                 g_userLightHasOffset = 0;
                             }
-                            if (!g_userLightHasRot &&
-                                ns->sh1x.hasUserLight) {
-                                g_userLightHasRot = 1;
-                                g_userLightRot[0] = ns->sh1x.userLightRot[0];
-                                g_userLightRot[1] = ns->sh1x.userLightRot[1];
-                                g_userLightRot[2] = ns->sh1x.userLightRot[2];
-                            }
+                        }
+                        /* w5-audit (A7-5): the boot's extras-rot fold runs
+                         * OUTSIDE the CLI guard (fog_poc.c:20707) — a CLI
+                         * world light still folds the scene's GLB rot. */
+                        if (!g_userLightHasRot && ns->sh1x.hasUserLight) {
+                            g_userLightHasRot = 1;
+                            g_userLightRot[0] = ns->sh1x.userLightRot[0];
+                            g_userLightRot[1] = ns->sh1x.userLightRot[1];
+                            g_userLightRot[2] = ns->sh1x.userLightRot[2];
+                        }
+                        /* w5-audit (A7-2): the V49 extras userLightOffset
+                         * twin — the boot fold (fog_poc.c:20719-20724)
+                         * resolves the GLB offset with the engine->glTF
+                         * (x,-y,-z) flip; the switch re-folded only the
+                         * ROT. */
+                        if (!g_userLightHasOffset && ns->sh1x.hasUserLight) {
+                            g_userLightHasOffset = 1;
+                            g_userLightOffset[0] = ns->sh1x.userLightOffset[0];
+                            g_userLightOffset[1] = -ns->sh1x.userLightOffset[1];
+                            g_userLightOffset[2] = -ns->sh1x.userLightOffset[2];
                         }
                         /* S26 audit C2-4: K_R zeroes prevViewX/prevViewZ
                          * (the rain view anchor — a fresh boot teleports
