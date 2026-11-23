@@ -3433,6 +3433,14 @@ typedef struct {
     float lightOffset[3];       /* camera-local meters (glTF axes) */
     int hasLightOffset;         /* offset authored in the camdat */
     float lightAhead;           /* meters along the beam (>= 0) */
+    /* v49 (task 3): the LINE light — the camtrack editor twin's travel
+     * surface (models[].light mode "line": start->end at speedMS with
+     * loopMode; the camtrack lightWorldPos math mirrored 1:1)          */
+    int   lightLine;            /* 1 = mode line (or start/end/speedMS auto) */
+    float lightLineStart[3];     /* world meters */
+    float lightLineEnd[3];      /* world meters */
+    float lightLineSpeedMS;     /* m/s (speedMS; >0 arms the travel) */
+    int   lightLineLoop;        /* 0 loop, 1 once, 2 pingPong */
 } Camdat;
 
 static int camdat_parse_loop(const char *s, int def) {
@@ -3858,6 +3866,44 @@ static int camdat_load(Camdat *cd, const char *path, const char *glbName) {
             }
             cd->lightAhead = (float)jnum(lt, "ahead", 0.0);
             if (cd->lightAhead < 0.0f) cd->lightAhead = 0.0f;
+            /* v49 (task 3): the LINE light — the camtrack editor twin's
+             * travel surface (mode "line", or the start/end/speedMS>0
+             * auto-detect exactly like camtrack.html:5684-5685). The
+             * camtrack lightWorldPos math (dur = len/speedMS; loop /
+             * once / pingPong) is mirrored by sh_user_light_world_pos.  */
+            {
+                const JValue *lst = jarr(lt, "start");
+                const JValue *len2 = jarr(lt, "end");
+                int hasStart = (lst && lst->count >= 3 &&
+                    jat(lst, 0)->type == JV_NUM && jat(lst, 1)->type == JV_NUM &&
+                    jat(lst, 2)->type == JV_NUM);
+                int hasEnd = (len2 && len2->count >= 3 &&
+                    jat(len2, 0)->type == JV_NUM && jat(len2, 1)->type == JV_NUM &&
+                    jat(len2, 2)->type == JV_NUM);
+                cd->lightLineSpeedMS = (float)jnum(lt, "speedMS", 0.0);
+                if (hasStart) {
+                    cd->lightLineStart[0] = (float)jat(lst, 0)->num;
+                    cd->lightLineStart[1] = (float)jat(lst, 1)->num;
+                    cd->lightLineStart[2] = (float)jat(lst, 2)->num;
+                }
+                if (hasEnd) {
+                    cd->lightLineEnd[0] = (float)jat(len2, 0)->num;
+                    cd->lightLineEnd[1] = (float)jat(len2, 1)->num;
+                    cd->lightLineEnd[2] = (float)jat(len2, 2)->num;
+                }
+                const char *lm2 = jstr(lt, "mode", NULL);
+                if (lm2 && !strcmp(lm2, "line")) cd->lightLine = 1;
+                else if (hasStart && hasEnd && cd->lightLineSpeedMS > 0.0f)
+                    cd->lightLine = 1;    /* the camtrack auto-detect twin */
+                if (cd->lightLine && hasStart && hasEnd) {
+                    const char *llm = jstr(lt, "loopMode", NULL);
+                    if (llm && !strcmp(llm, "once")) cd->lightLineLoop = 1;
+                    else if (llm && !strcmp(llm, "pingPong")) cd->lightLineLoop = 2;
+                    else cd->lightLineLoop = 0;   /* loop (the twin default) */
+                } else {
+                    cd->lightLine = 0;    /* incomplete line data: not a line */
+                }
+            }
         }
     }
 
@@ -5506,6 +5552,93 @@ static int   g_userLightHasOffset = 0;  /* 1 = an authored camera-local off */
 static float g_userLightOffset[3] = { -0.08f, 0.28f, -0.12f }; /* glTF m   */
 static int   g_userLightCLI = 0;        /* 1 = the CLI authored the light  */
 
+/* v49 (THE FLASHLIGHT-CIRCLE-REFLECTION FIX): the ENGINE TRAILING ANCHOR.
+ * The game's camera TRAILS the player 1.8-2.5 m (vc_main.c:2137-2151) and
+ * Harry's flashlight rides the torso bone (Game_FlashlightAttribsSet,
+ * effects.c:210-218 -> Gfx_FlashlightPositionUpdate). The PoC camera
+ * stands in for the eye, so the engine-true default light = the PLAYER
+ * ~2.5 m ahead of the camera — the v48-verified ahead:2.5 A/B geometry
+ * (the ring lands ON the water band). The pre-v49 default (camera-
+ * coincident + the 0.12 m local offset) failed Gate 2 (vz > 112 Q8 —
+ * lens_flare.c:73-75's early return kills the water branch too) and
+ * killed the WHOLE reflection family (measured: zero water prims); with
+ * --userlight-ahead the camera-locked beam kept ang_z < 40 deg (sin<=0)
+ * so the glint color clamped to BLACK — the engine's Harry aims from the
+ * player, ~2 m ahead of the eye, so ang_z lands near 180 deg = MAX
+ * brightness. The light beam rotation itself stays the verbatim -15 deg
+ * fixed pitch (Game_FlashlightAttribsSet — the engine has NO player
+ * pitch control of the beam).                                        */
+#define SH_LIGHT_TRAIL_M 2.5f
+
+/* v49: the LINE light runtime state (the camdat light mode "line").   */
+static int    g_userLightLine = 0;
+static float  g_userLightLineStart[3];
+static float  g_userLightLineEnd[3];
+static float  g_userLightLineSpeedMS = 0.0f;
+static int    g_userLightLineLoop = 0;   /* 0 loop, 1 once, 2 pingPong */
+static double g_userLightLineT = 0.0;   /* travel clock (30Hz tick dt) */
+
+/* v49: the ONE light anchor — the engine's g_WorldEnvRenderWork.light
+ * is ONE struct computed ONCE per tick (Gfx_FlashlightPositionUpdate)
+ * feeding BOTH the per-vertex mesh lighting AND shLensFlareExec. The
+ * pre-v49 PoC split it: the mesh light at camPos (the v6 directive),
+ * the FX light at cam+offset+ahead — the flashlight's lit floor circle
+ * and its water reflection anchored at DIFFERENT points. Shared now by
+ * sh_env_update_pose (the mesh light) and fx_light_anchor (the FX
+ * light): mode 1 = the free-world pose (or the LINE travel); modes 0/2
+ * = the camera frame + the verbatim Harry offset + ahead — mode 0 the
+ * engine 2.5 m TRAIL default, mode 2 the authored ahead.              */
+static void sh_user_light_world_pos(v3 camPos, Quat camQ, float out[3]) {
+    if (g_userLightMode == 1) {
+        if (g_userLightLine) {
+            /* the camtrack lightWorldPos twin (camtrack.html:11446-11464):
+             * f = t/dur on start->end; loop / once / pingPong            */
+            float ax = g_userLightLineStart[0], ay = g_userLightLineStart[1],
+                  az = g_userLightLineStart[2];
+            float dx = g_userLightLineEnd[0] - ax, dy = g_userLightLineEnd[1] - ay,
+                  dz = g_userLightLineEnd[2] - az;
+            float len = (float)sqrt((double)dx*dx + (double)dy*dy + (double)dz*dz);
+            if (len > 1e-9f && g_userLightLineSpeedMS > 1e-6f) {
+                float dur = len / g_userLightLineSpeedMS;
+                double f = g_userLightLineT / (double)dur;
+                if (g_userLightLineLoop == 1)      f = (f < 1.0) ? f : 1.0;
+                else if (g_userLightLineLoop == 2) { double c = fmod(f, 2.0);
+                                                      f = (c <= 1.0) ? c : 2.0 - c; }
+                else                              f = fmod(f, 1.0);
+                out[0] = ax + dx * (float)f;
+                out[1] = ay + dy * (float)f;
+                out[2] = az + dz * (float)f;
+            } else {
+                out[0] = ax; out[1] = ay; out[2] = az;
+            }
+        } else {
+            out[0] = g_userLightWorld[0]; out[1] = g_userLightWorld[1];
+            out[2] = g_userLightWorld[2];
+        }
+        return;
+    }
+    /* the verbatim Game_FlashlightAttribsSet local, engine->glTF (x,-y,-z) */
+    float ox = -0.08f, oy = 0.28f, oz = -0.12f;
+    if (g_userLightHasOffset) {
+        ox = g_userLightOffset[0]; oy = g_userLightOffset[1];
+        oz = g_userLightOffset[2];
+    }
+    /* mode 0: the engine TRAIL default; mode 2: the authored ahead      */
+    float extraAhead = (g_userLightMode == 2) ? g_userLightAheadM
+                                              : SH_LIGHT_TRAIL_M;
+    /* the engine applies the offset in the BONE (camera) frame with NO
+     * light-rotation pitch (M5); ahead extends along camera-forward     */
+    v3 X, Y, Z;
+    quat_axes(camQ, &X, &Y, &Z);
+    float wx = X.x * ox + Y.x * oy + Z.x * oz + camPos.x;
+    float wy = X.y * ox + Y.y * oy + Z.y * oz + camPos.y;
+    float wz = X.z * ox + Y.z * oy + Z.z * oz + camPos.z;
+    if (extraAhead > 0.0f) {          /* -Z is camera-forward (glTF)       */
+        wx -= Z.x * extraAhead; wy -= Z.y * extraAhead; wz -= Z.z * extraAhead;
+    }
+    out[0] = wx; out[1] = wy; out[2] = wz;
+}
+
 
 /* engine beam dir (y-down local): (0, -sin(-15deg), cos(-15deg)*cos(0)) =
  * (0, +1061, 3957) -> camera-local glTF (x, -y, -z) = (0, -1061, -3957)
@@ -6129,14 +6262,19 @@ static void sh_env_update_pose(ShEnv *env, v3 camPos, Quat camQ) {
      * to the authored world pose too — the free-world light lights the
      * geometry from its OWN position, not the camera's eye (the 6-DOF
      * user light the task asked for).                                */
-    if (g_userLightMode == 1) {
-        L->pos[0] = (int)(g_userLightWorld[0] * 4096.0f);
-        L->pos[1] = (int)(g_userLightWorld[1] * 4096.0f);
-        L->pos[2] = (int)(g_userLightWorld[2] * 4096.0f);
-    } else {
-        L->pos[0] = (int)(camPos.x * 4096.0f);
-        L->pos[1] = (int)(camPos.y * 4096.0f);
-        L->pos[2] = (int)(camPos.z * 4096.0f);
+    {
+    /* v49: ONE light — the mesh light rides the SAME anchor the FX light
+     * rides (the engine's single g_WorldEnvRenderWork.light feeds both;
+     * the pre-v49 camera-coincident mesh light split the flashlight's lit
+     * floor circle from its water reflection). sh_user_light_world_pos
+     * = the fx_light_anchor twin: the verbatim Harry offset rotated by
+     * the camera frame + the engine TRAIL (ahead) — mode 1 the authored
+     * world pose (the LINE travel included).                          */
+        float wp[3];
+        sh_user_light_world_pos(camPos, camQ, wp);
+        L->pos[0] = (int)(wp[0] * 4096.0f);
+        L->pos[1] = (int)(wp[1] * 4096.0f);
+        L->pos[2] = (int)(wp[2] * 4096.0f);
     }
 
     /* v40 audit (C-F1): the decomp's ONE multiply site — effects.c:476
@@ -6184,6 +6322,12 @@ static void sh_env_update_pose(ShEnv *env, v3 camPos, Quat camQ) {
 }
 
 static void sh_env_tick(ShEnv *env, int dtQ12, v3 camPos, Quat camQ) {
+    /* v49: the LINE light's travel clock — the engine advances every
+     * effect on the SAME game-frame dt (D_800AFDAC++ only when
+     * g_DeltaTime != 0); the camtrack twin rides state.t (frozen when
+     * paused, exactly like the 30Hz tick grid here).                     */
+    if (g_userLightLine && dtQ12 > 0)
+        g_userLightLineT += (double)dtQ12 / 4096.0;
     /* Gfx_EffectsUpdate — flashlight ramp + blend + fog params + light */
     if (env->isFlashlightOn)
         env->flashlightIntensity += (int)(((int64_t)dtQ12 * 16384) >> 12); /* dt*4.0 */
@@ -11495,47 +11639,18 @@ static void fx_water_glint_blit(Frame *fb, int px0, int py0,
  * userLight offset / the free-world or ahead light; writes g_fxLightPos
  * (Q12, glTF axes). See the full provenance comment in fx_lens_exec. */
 static void fx_light_anchor(const Sh1x *sx, const CamPose *cam) {
-    {
-        /* engine-local (x,y,z) -> camera-local (x,-y,-z) [the PoC's
-         * standing axis map]; then camera quaternion * local           */
-        float ox = -0.08f, oy = 0.28f, oz = -0.12f;
-        if (g_userLightHasOffset) {
-            ox = g_userLightOffset[0];
-            oy = g_userLightOffset[1];
-            oz = g_userLightOffset[2];
-        } else if (sx->hasUserLight) {
-            ox = sx->userLightOffset[0];
-            oy = -sx->userLightOffset[1];
-            oz = -sx->userLightOffset[2];
-        }
-        float wx, wy, wz;
-        if (g_userLightMode == 1) {
-            /* --userlight x,y,z: FREE-WORLD light (engine-native NULL-
-             * bone path, Gfx_FlashlightPositionUpdate coord1==NULL)    */
-            wx = g_userLightWorld[0]; wy = g_userLightWorld[1];
-            wz = g_userLightWorld[2];
-        } else {
-            float extraAhead = (g_userLightMode == 2) ? g_userLightAheadM : 0.0f;
-            /* the engine applies the offset in the BONE (camera) frame
-             * with NO light-rotation pitch (M5); extraAhead extends the
-             * forward offset (the trailing-camera geometry)             */
-            float lx0 = ox, ly0 = oy, lz0 = oz;
-            /* camera basis (three.js rows of R) */
-            v3 X, Y, Z;
-            quat_axes(cam->q, &X, &Y, &Z);
-            wx = X.x * lx0 + Y.x * ly0 + Z.x * lz0 + cam->pos.x - X.x * 0.0f;
-            wy = X.y * lx0 + Y.y * ly0 + Z.y * lz0 + cam->pos.y;
-            wz = X.z * lx0 + Y.z * ly0 + Z.z * lz0 + cam->pos.z;
-            if (extraAhead > 0.0f) {
-                /* -Z is camera-forward in glTF: move along -Z axis     */
-                wx -= Z.x * extraAhead; wy -= Z.y * extraAhead;
-                wz -= Z.z * extraAhead;
-            }
-        }
-        g_fxLightPos[0] = (int)(wx * 4096.0f);
-        g_fxLightPos[1] = (int)(wy * 4096.0f);
-        g_fxLightPos[2] = (int)(wz * 4096.0f);
-    }
+    /* v49: the shared ONE-light anchor (sh_user_light_world_pos) — the
+     * pre-v49 body resolved the same chain inline with a camera-
+     * coincident mode-0 default (Gate-2 dead); the EXTRAs offset is
+     * resolved ONCE at boot into g_userLightOffset (the rot twin at
+     * :19446 was already the pattern), so the sx param is no longer
+     * needed here (kept for the call sites' signatures).              */
+    (void)sx;
+    float wp[3];
+    sh_user_light_world_pos(cam->pos, cam->q, wp);
+    g_fxLightPos[0] = (int)(wp[0] * 4096.0f);
+    g_fxLightPos[1] = (int)(wp[1] * 4096.0f);
+    g_fxLightPos[2] = (int)(wp[2] * 4096.0f);
 }
 
 /* v43 — shLensFlareExec's COMPUTE half, moved OUT of fx_pass to run
@@ -16083,7 +16198,10 @@ typedef enum {
     K_TAB, K_UP, K_DOWN, K_ENTER, K_LBRK, K_RBRK, K_COMMA, K_PERIOD,
     K_H, K_D0, K_D1, K_D2, K_D3, K_D4, K_D5, K_D6, K_D7, K_D8, K_D9,
     /* v23: the R2 (self) view — the view button + the feature toggle */
-    K_VIEW, K_R2TOGGLE
+    K_VIEW, K_R2TOGGLE,
+    /* v49 (task 3): the runtime USER LIGHT — camera-like movement + aim */
+    K_LFWD, K_LBACK, K_LLEFT, K_LRIGHT, K_LUP, K_LDOWN,
+    K_LPITUP, K_LPITDN, K_LYAWL, K_LYAWR
 } LiveKey;
 
 /* v20 — THE ENGINE 30 Hz TICK LOCKSTEP (the night+flashlight FLICKER fix).
@@ -16794,6 +16912,41 @@ static void live_draw_overlay(LiveApp *A) {
 /* returns 1 when the app should quit. v23: `down` carries the key state
  * (1 = key-down event, 0 = key-up). Everything except the R2-view held
  * keys acts on the DOWN edge only — identical behavior to v22.          */
+/* v49 (task 3 — the USER PROGRAMMABLE LIGHT): the runtime camera-like
+ * movement. The light moves in ALL the ways the camera can — I/K fwd/
+ * back, J/O left/right, U/C up/down — in the CAMERA frame (the anchor's
+ * own frame); T/G aim the pitch, A/E the yaw (the ANGLE DISTINCTION).
+ * The first nudge converts the current anchor into a free-world light
+ * (engine mode 1) AT the anchor's own position — the light then holds a
+ * world pose while the camera keeps moving, exactly like the authored
+ * follow:'world' surface (a later nudge keeps nudging the world pose).
+ * F toggles the flashlight (Game_FlashlightToggle); day modes stay
+ * inert (the verbatim Spot gates).                                       */
+static void user_light_nudge(LiveApp *A, int axis, float dir) {
+    CamPose cp = playback_current_pose(&A->play, A->track, &A->ovr);
+    v3 X, Y, Z;
+    quat_axes(cp.q, &X, &Y, &Z);
+    float wp[3];
+    sh_user_light_world_pos(cp.pos, cp.q, wp);
+    const float st = 0.25f * dir;   /* 0.25 m per press (OS key-repeat = held) */
+    if (axis == 0) { wp[0] += X.x * st; wp[1] += X.y * st; wp[2] += X.z * st; }
+    else if (axis == 1) { wp[0] += Y.x * st; wp[1] += Y.y * st; wp[2] += Y.z * st; }
+    else { wp[0] -= Z.x * st; wp[1] -= Z.y * st; wp[2] -= Z.z * st; }  /* fwd = -Z */
+    g_userLightMode = 1;             /* engine mode 1: the free-world light  */
+    g_userLightLine = 0;             /* a nudge overrides the LINE travel    */
+    g_userLightWorld[0] = wp[0];
+    g_userLightWorld[1] = wp[1];
+    g_userLightWorld[2] = wp[2];
+    printf("[userlight] world pos now %.2f, %.2f, %.2f (mode 1)\n",
+           wp[0], wp[1], wp[2]);
+}
+static void user_light_aim(int axis, float d) {
+    g_userLightHasRot = 1;           /* the first press AUTHORS the aim      */
+    g_userLightRot[axis] += d;       /* pitch deg (0) / yaw deg (1)          */
+    printf("[userlight] rot now pitch %.1f, yaw %.1f\n",
+           g_userLightRot[0], g_userLightRot[1]);
+}
+
 static int live_action(LiveApp *A, LiveKey k, int down) {
     /* --- the R2 (self) view held keys: tracked on BOTH edges —
      * the engine reads buttonFlags.held every tick (vcPreSetDataInVC_WORK) */
@@ -16822,6 +16975,20 @@ static int live_action(LiveApp *A, LiveKey k, int down) {
         return 0;                        /* all other keys: DOWN edge only */
     }
     switch (k) {
+    /* v49 (task 3): the runtime USER LIGHT keys — the movement in the
+     * camera frame (I/K fwd/back, J/O left/right, U/C up/down) + the
+     * aim angle distinction (T/G pitch, A/E yaw). Down-edge only (the
+     * generic !down early-out above already enforces it).             */
+    case K_LFWD:   user_light_nudge(A, 2, +1.0f); break;
+    case K_LBACK:  user_light_nudge(A, 2, -1.0f); break;
+    case K_LLEFT:  user_light_nudge(A, 0, -1.0f); break;
+    case K_LRIGHT: user_light_nudge(A, 0, +1.0f); break;
+    case K_LUP:    user_light_nudge(A, 1, +1.0f); break;
+    case K_LDOWN:  user_light_nudge(A, 1, -1.0f); break;
+    case K_LPITUP: user_light_aim(0, +5.0f); break;
+    case K_LPITDN: user_light_aim(0, -5.0f); break;
+    case K_LYAWL:  user_light_aim(1, +5.0f); break;
+    case K_LYAWR:  user_light_aim(1, -5.0f); break;
     case K_QUIT: return 1;
     case K_ESC:
         /* v9: when the mode browser is open, ESC closes it (the classic
@@ -16833,6 +17000,7 @@ static int live_action(LiveApp *A, LiveKey k, int down) {
         A->play.t = 0;
         A->play.sessionT = 0;         /* v10: restart the session clock too */
         A->tickPending = 0;           /* v20: restart the tick grid too      */
+        g_userLightLineT = 0.0;       /* v49: the LINE light restarts too    */
         /* v41-ENGFX bug 3a: the room-reload weather sync — the engine's
          * WeatherParticle_SystemUpdate case 0 / NO_VALUE arm (particle.c:
          * 396-418, run at every map load): 800DD598 = 0, g_SysWork.field_234A
@@ -17387,6 +17555,17 @@ static LRESULT CALLBACK live_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         case VK_OEM_PERIOD: k = K_PERIOD; break;
         case 'H':         k = K_H;     break;   /* HUD toggle */
         case 'Y':         k = K_R2TOGGLE; break; /* v23: extraViewMode */
+        /* v49 (task 3): the runtime USER LIGHT keys */
+        case 'I':         k = K_LFWD;   break;  /* light fwd   */
+        case 'K':         k = K_LBACK;  break;  /* light back  */
+        case 'J':         k = K_LLEFT;  break;  /* light left  */
+        case 'O':         k = K_LRIGHT; break;  /* light right */
+        case 'U':         k = K_LUP;    break;  /* light up    */
+        case 'C':         k = K_LDOWN;  break;  /* light down  */
+        case 'T':         k = K_LPITUP; break;  /* aim pitch up   */
+        case 'G':         k = K_LPITDN; break;  /* aim pitch down */
+        case 'A':         k = K_LYAWL;  break;  /* aim yaw left   */
+        case 'E':         k = K_LYAWR;  break;  /* aim yaw right  */
         case '0': case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8': case '9':
             k = (LiveKey)(K_D0 + ((int)wp - '0'));
@@ -17542,6 +17721,17 @@ static LiveKey sdl_key(const unsigned char *ev) {
     if (sym == '.') return K_PERIOD;
     if (sym == 'h' || sym == 'H') return K_H;
     if (sym == 'y' || sym == 'Y') return K_R2TOGGLE;  /* v23: extraViewMode */
+    /* v49 (task 3): the runtime USER LIGHT keys */
+    if (sym == 'i' || sym == 'I') return K_LFWD;
+    if (sym == 'k' || sym == 'K') return K_LBACK;
+    if (sym == 'j' || sym == 'J') return K_LLEFT;
+    if (sym == 'o' || sym == 'O') return K_LRIGHT;
+    if (sym == 'u' || sym == 'U') return K_LUP;
+    if (sym == 'c' || sym == 'C') return K_LDOWN;
+    if (sym == 't' || sym == 'T') return K_LPITUP;
+    if (sym == 'g' || sym == 'G') return K_LPITDN;
+    if (sym == 'a' || sym == 'A') return K_LYAWL;
+    if (sym == 'e' || sym == 'E') return K_LYAWR;
     /* v23: the configurable view-button key (default 'V') */
     if (sym == (unsigned)g_r2_viewkey ||
         sym == (unsigned)(g_r2_viewkey + ('a' - 'A'))) return K_VIEW;
@@ -17766,6 +17956,17 @@ static LiveKey x11_key(unsigned long keysym) {
     if (keysym == '.') return K_PERIOD;
     if (keysym == 'h' || keysym == 'H') return K_H;
     if (keysym == 'y' || keysym == 'Y') return K_R2TOGGLE; /* v23: extraViewMode */
+    /* v49 (task 3): the runtime USER LIGHT keys */
+    if (keysym == 'i' || keysym == 'I') return K_LFWD;
+    if (keysym == 'k' || keysym == 'K') return K_LBACK;
+    if (keysym == 'j' || keysym == 'J') return K_LLEFT;
+    if (keysym == 'o' || keysym == 'O') return K_LRIGHT;
+    if (keysym == 'u' || keysym == 'U') return K_LUP;
+    if (keysym == 'c' || keysym == 'C') return K_LDOWN;
+    if (keysym == 't' || keysym == 'T') return K_LPITUP;
+    if (keysym == 'g' || keysym == 'G') return K_LPITDN;
+    if (keysym == 'a' || keysym == 'A') return K_LYAWL;
+    if (keysym == 'e' || keysym == 'E') return K_LYAWR;
     /* v23: the configurable view-button key (default 'V') */
     if (keysym == (unsigned long)g_r2_viewkey ||
         keysym == (unsigned long)(g_r2_viewkey + ('a' - 'A'))) return K_VIEW;
@@ -19706,6 +19907,15 @@ int main(int argc, char **argv) {
                    "  ESC quit | SPACE pause | R restart | +/- speed x0.125..x8\n"
                    "  Left/Right scrub 1s | N night/nightmare cycle | F flashlight\n"
                    "  M fog | B snow | P PSX-wobble | D dither | W weather | L lightning | S screenshot\n"
+                   "v49 USER PROGRAMMABLE LIGHT (task 3 — Harry's flashlight):\n"
+                   "  The default anchor is the ENGINE TRAILING CAMERA geometry\n"
+                   "  (the light = the player ~2.5 m ahead of the camera, the\n"
+                   "  verbatim -15 deg beam pitch) — the reflection fires.\n"
+                   "  I/K move fwd/back, J/O left/right, U/C up/down (camera\n"
+                   "  frame — moves in all the ways the camera can; the first\n"
+                   "  nudge freezes it into a free-world light) | T/G aim the\n"
+                   "  pitch, A/E the yaw (the ANGLE DISTINCTION) | F toggles\n"
+                   "  the flashlight (day modes stay inert — the Spot gates)\n"
                    "v23 R2 (self) view — the engine SELF_VIEW system:\n"
                    "  V (configurable --r2-key) hold = the view button; Y = Extra View\n"
                    "  Mode toggle; arrows = the restricted pan while engaged (head\n"
@@ -20454,6 +20664,26 @@ int main(int argc, char **argv) {
                 if (cd.lightAhead > 0.0f && !cd.lightFollow)
                     g_userLightMode = 2;
                 g_userLightAheadM = cd.lightAhead;
+                /* v49 (task 3): the LINE light — the camtrack twin's
+                 * travel (mode "line": start->end at speedMS, loopMode).
+                 * The authored world-light surface (follow world +
+                 * mode line) — the runtime pos comes from the shared
+                 * anchor's g_userLightLine branch (lightWorldPos twin).
+                 * The PoC previously DROPPED the line fields entirely. */
+                if (cd.lightLine && !g_userLightCLI) {
+                    g_userLightMode = 1;      /* the free-world carrier    */
+                    g_userLightLine = 1;
+                    g_userLightLineT = 0.0;   /* the travel clock restarts */
+                    memcpy(g_userLightLineStart, cd.lightLineStart,
+                           sizeof(float) * 3);
+                    memcpy(g_userLightLineEnd, cd.lightLineEnd,
+                           sizeof(float) * 3);
+                    g_userLightLineSpeedMS = cd.lightLineSpeedMS;
+                    g_userLightLineLoop = cd.lightLineLoop;
+                    g_userLightWorld[0] = cd.lightLineStart[0];
+                    g_userLightWorld[1] = cd.lightLineStart[1];
+                    g_userLightWorld[2] = cd.lightLineStart[2];
+                }
                 if (cd.hasLightRot) {
                     g_userLightHasRot = 1;
                     g_userLightRot[0] = cd.lightRot[0];
@@ -20479,6 +20709,18 @@ int main(int argc, char **argv) {
             g_userLightRot[0] = sc.sh1x.userLightRot[0];
             g_userLightRot[1] = sc.sh1x.userLightRot[1];
             g_userLightRot[2] = sc.sh1x.userLightRot[2];
+        }
+        /* v49: the Sh1x userLightOffset EXTRAs — the same fallback for the
+         * anchor's local offset (fx_light_anchor read sx directly pre-
+         * v49 and the mesh light ignored it; the unified ONE-light anchor
+         * resolves it ONCE here, engine->glTF flip (x,-y,-z) as the old
+         * anchor did). The EXTRAs stay the UNBIASED verbatim attribs on
+         * the GLB side; this is the consumer-side resolution.          */
+        if (!g_userLightHasOffset && sc.sh1x.hasUserLight) {
+            g_userLightHasOffset = 1;
+            g_userLightOffset[0] = sc.sh1x.userLightOffset[0];
+            g_userLightOffset[1] = -sc.sh1x.userLightOffset[1];
+            g_userLightOffset[2] = -sc.sh1x.userLightOffset[2];
         }
         sh_env_set_pair(&A.env, bootPair0, bootPair1);
         /* v9: mode-selection state — cursor at the boot pair; HUD default on */
