@@ -1661,7 +1661,6 @@ static void sh_watertex_default(void) {
     g_waterTexInit = 1;
 }
 
-
 /* standard base64 decode (RFC 4648) — the waterTex EXTRAs carry the
  * 8192-byte 4bpp sheet base64-encoded (the compact verbatim form). */
 static int sh_b64_decode(const char *s, unsigned char *out, int outMax) {
@@ -1939,7 +1938,6 @@ static void sh1x_load(Sh1x *sx, const JValue *json) {
      * fx_water_tile_update; the block is record/audit material for this
      * consumer (the formulas below cite it). */
     if (ee && ee->type == JV_OBJ && sx->envFlagIsWaterRefract) {
-
         const JValue *wr = jget(ee, "waterRefract");
         if (wr && wr->type == JV_OBJ) {
             const char *b64 = jstr(wr, "pixels", "");
@@ -18787,6 +18785,29 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                                     g_userLightRot[1] = nc->lightRot[1];
                                     g_userLightRot[2] = nc->lightRot[2];
                                 }
+                                /* re-audit: the boot fold also writes the
+                                 * OFFSET (hasLightOffset/lightOffset) — the
+                                 * old switch fold omitted it, carrying the
+                                 * OLD room's offset into fx_light_anchor */
+                                if (nc->hasLightOffset) {
+                                    g_userLightHasOffset = 1;
+                                    g_userLightOffset[0] = nc->lightOffset[0];
+                                    g_userLightOffset[1] = nc->lightOffset[1];
+                                    g_userLightOffset[2] = nc->lightOffset[2];
+                                } else {
+                                    g_userLightHasOffset = 0;
+                                }
+                            } else {
+                                /* re-audit: NO reset when the new camdat
+                                 * has no light block — A(light)->B(none)
+                                 * kept A's mode/world/ahead AND A's
+                                 * HasRot (which suppressed B's own GLB
+                                 * userLightRot at the !HasRot guard). A
+                                 * fresh boot of B runs the defaults. */
+                                g_userLightMode = 0;
+                                g_userLightAheadM = 0.0f;
+                                g_userLightHasRot = 0;
+                                g_userLightHasOffset = 0;
                             }
                             if (!g_userLightHasRot &&
                                 ns->sh1x.hasUserLight) {
