@@ -1661,6 +1661,7 @@ static void sh_watertex_default(void) {
     g_waterTexInit = 1;
 }
 
+
 /* standard base64 decode (RFC 4648) — the waterTex EXTRAs carry the
  * 8192-byte 4bpp sheet base64-encoded (the compact verbatim form). */
 static int sh_b64_decode(const char *s, unsigned char *out, int outMax) {
@@ -1938,6 +1939,7 @@ static void sh1x_load(Sh1x *sx, const JValue *json) {
      * fx_water_tile_update; the block is record/audit material for this
      * consumer (the formulas below cite it). */
     if (ee && ee->type == JV_OBJ && sx->envFlagIsWaterRefract) {
+
         const JValue *wr = jget(ee, "waterRefract");
         if (wr && wr->type == JV_OBJ) {
             const char *b64 = jstr(wr, "pixels", "");
@@ -17891,6 +17893,31 @@ static int run_window_x11(LiveApp *A) {
 /* ------------------------------------------------------------------ */
 #ifdef LIVELY_PLAYER
 
+/* S26 audit C2-1: g_drWaveIdx/g_drWaveClut (dr_wave_data.h) are the
+ * compiled-in DEFAULTS that the SH1X.envEffects.waterRefract payload
+ * overrides IN PLACE at scene load (one-way). This SEAM-owned pristine
+ * snapshot + restore lets the LIVE SCENE SWITCH reset a payload-less
+ * room to the defaults exactly like that room's fresh boot. The
+ * snapshot is taken in the arg pre-scan (R4) BEFORE the boot scene
+ * loads (the only seam point that runs ahead of scene_load_glb).     */
+static unsigned char  g_lp_drWaveIdxPristine[64][128];
+static unsigned short g_lp_drWaveClutPristine[2][16];
+static int g_lp_drWavePristineSaved = 0;
+
+static void lp_drwave_snapshot(void) {
+    if (!g_lp_drWavePristineSaved) {
+        memcpy(g_lp_drWaveIdxPristine, g_drWaveIdx, sizeof(g_lp_drWaveIdxPristine));
+        memcpy(g_lp_drWaveClutPristine, g_drWaveClut, sizeof(g_lp_drWaveClutPristine));
+        g_lp_drWavePristineSaved = 1;
+    }
+}
+
+static void lp_drwave_default(void) {
+    if (!g_lp_drWavePristineSaved) return;   /* no snapshot: nothing to restore */
+    memcpy(g_drWaveIdx, g_lp_drWaveIdxPristine, sizeof(g_drWaveIdx));
+    memcpy(g_drWaveClut, g_lp_drWaveClutPristine, sizeof(g_drWaveClut));
+}
+
 /* the seam's 3 path probes (boot scene / boot camdat / live scene switch)
  * build their separator through LP_SEP: '\' on the shipped Windows exe
  * (byte-identical string to the original literal), '/' on the non-Win32
@@ -18706,6 +18733,77 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                         g_tvpaint_pad = 0;
                         g_flaresys.nowEffRate = 0;
                         sh1x_water_ripple_spawn((Sh1x *)&ns->sh1x);
+                        /* S26 audit C2-1: the waterRefract sheet override is
+                         * ONE-WAY — sh1x_load re-overrides g_drWaveIdx/Clut
+                         * only when the NEW room carries the payload; a
+                         * fresh boot of a payload-less room starts from the
+                         * compiled-in DEFAULTS. Restore them now if the new
+                         * room has no hasDrWave, so a live switch A(payload)
+                         * -> B(none) does not render B's water with A's
+                         * sheet. Same contract as C2-2 below (waterTex).   */
+                        if (!ns->sh1x.hasDrWave)
+                            lp_drwave_default();
+                        /* S26 audit C2-2: waterTex is the same one-way
+                         * override (g_waterTexInit==2 stays resident when
+                         * the new room has no waterTex block; the lazy
+                         * sh_watertex_default() early-returns on it). A
+                         * fresh boot of a payload-less room runs the
+                         * compiled-in sheet — restore it (Init 1 = the
+                         * defaults are resident; a new override reloads
+                         * to 2 in sh1x_load).                            */
+                        if (!ns->sh1x.hasWaterTex) {
+                            memcpy(g_waterTexIdx, g_waterTimIdx,
+                                   sizeof(g_waterTexIdx));
+                            memcpy(g_waterTexClut, g_waterTimClut,
+                                   sizeof(g_waterTexClut));
+                            g_waterTexInit = 1;
+                        }
+                        /* S26 audit C2-3: the user light is folded per-boot
+                         * from the camdat light block + the GLB
+                         * userLightRot extras (the boot precedence: CLI
+                         * --userlight (--userlightrot) > the camdat
+                         * models[].light > the GLB userLightRot). The old
+                         * switch re-bound a NEW camdat but never re-folded,
+                         * so fx_light_anchor preferred the OLD room's stale
+                         * g_userLight* over the new scene's own light —
+                         * the water gates could diverge from a fresh boot
+                         * of the new room. Mirror the boot fold exactly
+                         * (the CLI keeps precedence via g_userLightCLI;
+                         * the GLB rot rides !g_userLightHasRot).          */
+                        if (!g_userLightCLI) {
+                            if (nc->hasLight) {
+                                g_userLightMode = nc->lightFollow ? 1 : 0;
+                                if (nc->lightFollow == 1) {
+                                    g_userLightWorld[0] = nc->lightPos[0];
+                                    g_userLightWorld[1] = nc->lightPos[1];
+                                    g_userLightWorld[2] = nc->lightPos[2];
+                                }
+                                if (nc->lightAhead > 0.0f && !nc->lightFollow)
+                                    g_userLightMode = 2;
+                                g_userLightAheadM = nc->lightAhead;
+                                if (nc->hasLightRot) {
+                                    g_userLightHasRot = 1;
+                                    g_userLightRot[0] = nc->lightRot[0];
+                                    g_userLightRot[1] = nc->lightRot[1];
+                                    g_userLightRot[2] = nc->lightRot[2];
+                                }
+                            }
+                            if (!g_userLightHasRot &&
+                                ns->sh1x.hasUserLight) {
+                                g_userLightHasRot = 1;
+                                g_userLightRot[0] = ns->sh1x.userLightRot[0];
+                                g_userLightRot[1] = ns->sh1x.userLightRot[1];
+                                g_userLightRot[2] = ns->sh1x.userLightRot[2];
+                            }
+                        }
+                        /* S26 audit C2-4: K_R zeroes prevViewX/prevViewZ
+                         * (the rain view anchor — a fresh boot teleports
+                         * the bank by the full view position on tick 1);
+                         * the switch's snow_reset only zeroes prevX/prevZ,
+                         * so the OLD room's rain anchor carried across.
+                         * K_R parity (fog_poc.c:16906-16907).               */
+                        A->snow.prevViewX = 0;
+                        A->snow.prevViewZ = 0;
                     }
                     {   /* audit R3-D1: carry the ROOM so a wrong-index
                          * regression cannot pass as a bare success;
@@ -19684,6 +19782,10 @@ int main(int argc, char **argv) {
     }
 
 #ifdef LIVELY_PLAYER
+    /* S26 audit C2-1: snapshot the compiled-in DR_WAVE defaults NOW —
+     * this block runs BEFORE the boot scene loads (scene_load_glb below),
+     * the only seam point ahead of any waterRefract override.           */
+    lp_drwave_snapshot();
     /* ---- the Lively Wallpaper player contract (the C# players' args) ---
      * S17 ROOT-CAUSE FIX: this block ran AFTER the strict arg loop, whose
      * `unknown arg` tail rejects --wallpaper-* and EXITS 1 — the player
