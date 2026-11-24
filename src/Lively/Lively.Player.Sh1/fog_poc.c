@@ -18833,7 +18833,13 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                      * load. (The rebuilt gh uses A.env.datumM's boot value;
                      * the boot site refreshes it from the new track right
                      * after snow_init — mirrored below.)                     */
+                    /* w5-audit (A7-8): snow_init's memset forces
+                     * enabled = 1 — the boot honors the panel's Snow
+                     * toggle (:20876); the switch must not re-enable
+                     * snow the user turned off. */
+                    int lpSnowUserOn = A->snow.enabled;
                     snow_init(&A->snow, (Scene *)A->R.sc, A->track);
+                    if (!lpSnowUserOn) A->snow.enabled = 0;
                     A->env.datumM = A->snow.datumM;
                     /* S25 audit D-1/D-5: K_R re-syncs the SystemUpdate
                      * case-0 weather arm UNCONDITIONALLY (15951-15955:
@@ -18863,8 +18869,12 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                         A->snow.weatherCurrent = A->snow.weatherBits;
                         A->snow.weatherTarget = A->snow.weatherBits;
                         A->snow.weatherSettings = (uint16_t)(A->snow.weatherBits >> 12);
-                        snow_reset(&A->snow);
-                        A->R.snow = A->snow.enabled ? &A->snow : NULL;
+                        /* w5-audit (A7-6): the FINAL warm-up moved to the
+                         * END of the chain (after the densitySel re-sync
+                         * and the D-3 arm) with the BOOT seed — the early
+                         * snow_reset here ran on the pre-arm settings byte
+                         * at densitySel 0 (the V45-W7 inverted-order class
+                         * fixed for K_R at :17041-17053). */
                     }
                     /* S20 audit F5: the room-reload resets the K_R path
                      * (fog_poc.c:15440-15527) and the fresh boot run on
@@ -18915,6 +18925,13 @@ static int run_window_lively(LiveApp *A, const char *lpSceneGlb,
                             if (wt >= 0)
                                 sh_particle_weather_target_set(&A->snow, wt);
                         }
+                        /* w5-audit (A7-6): the FINAL warm-up at the END of
+                         * the chain — the K_R form (g_bootSnowSeed, the
+                         * post-arm settings byte, the re-synced density
+                         * selector) + the boot's nextWeather parity. */
+                        snow_reset_seed(&A->snow, g_bootSnowSeed);
+                        A->snow.nextWeather = 2;
+                        A->R.snow = A->snow.enabled ? &A->snow : NULL;
                         A->env.flashlightIntensity = 0;
                         sh_env_reset(&A->env, 0.0);
                         {
