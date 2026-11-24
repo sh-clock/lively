@@ -18667,6 +18667,40 @@ static LRESULT CALLBACK lp_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_lp_app) win32_present(hwnd, g_lp_app);
         return 0;
     }
+    /* w5-audit (A7-4, reimplemented NARROWED): the V49 runtime USER
+     * LIGHT keys routed to the engine's own live_action — the full
+     * live_wndproc map (the PR's form) was rejected by audit: it made
+     * Q/ESC TERMINATE the wallpaper, mutated pause/weather/preset state
+     * desynced from the panel checkboxes, and referenced 8 VK_ codes
+     * the LP_POSIX_STUB does not define (VK_TAB/VK_UP/VK_DOWN/VK_RETURN/
+     * VK_OEM_4/VK_OEM_6/VK_OEM_COMMA/VK_OEM_PERIOD) — the Linux
+     * -DLIVELY_PLAYER ipc16-gate build went red. The LIGHT surface (the
+     * shipped task-3 feature, NO panel substitute) is all we route: the
+     * nudge (I/K/J/O/U/C — fwd/back/left/right/up/down) + the aim
+     * (T/G pitch, A/E yaw) — all plain letters, no VK_ defines needed.
+     * Unhandled keys reach DefWindowProcA (the host keeps them);
+     * live_action returns 1 only for quit-class keys, which this set
+     * never contains — the wallpaper never terminates on a light key. */
+    if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && g_lp_app) {
+        LiveKey k = K_NONE;
+        switch ((int)wp) {
+        case 'I': k = K_LFWD;   break;
+        case 'K': k = K_LBACK;  break;
+        case 'J': k = K_LLEFT;  break;
+        case 'O': k = K_LRIGHT; break;
+        case 'U': k = K_LUP;    break;
+        case 'C': k = K_LDOWN;  break;
+        case 'T': k = K_LPITUP; break;
+        case 'G': k = K_LPITDN; break;
+        case 'A': k = K_LYAWL;  break;
+        case 'E': k = K_LYAWR;  break;
+        default: break;
+        }
+        if (k != K_NONE) {
+            live_action(g_lp_app, k, msg == WM_KEYDOWN ? 1 : 0);
+            return 0;
+        }
+    }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
