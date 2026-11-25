@@ -20428,6 +20428,28 @@ int main(int argc, char **argv) {
         if (camdatPath) g_lp_camdat_path = camdatPath;  /* audit A-D4 */
     }
 #endif /* LIVELY_PLAYER */
+    /* ---- optional standalone TIM viewer (S19: BEFORE the camdat/GLB
+     * discovery — a lone --tim-file boots the viewer with NO camdat/GLB;
+     * the CI TIM gate and the documented plain-CLI delta rely on this) ---- */
+    if (timFile) {
+        TimImage tim;
+        if (!tim_load(&tim, timFile)) {
+            fprintf(stderr, "cannot load TIM %s\n", timFile);
+            return 1;
+        }
+        printf("TIM %s: %dx%d, %d palettes\n", timFile, tim.w, tim.h, tim.clutCount);
+        Frame fb; frame_alloc(&fb, w, h);
+        blit_tim(&fb, &tim, timPalette);
+        char out[1024];
+        ensure_dir_simple(outdir);
+        snprintf(out, sizeof(out), "%s/tim_p%02d_%dx%d.png", outdir, timPalette, tim.w, tim.h);
+        if (!write_png_rgb(out, fb.rgb, fb.w, fb.h)) return 1;
+        printf("wrote %s\n", out);
+        if (timView >= 0) { /* V45 E-5: DEAD — N parsed but never applied; NOT a palette selector (blit_tim used only timPalette) */ }
+        tim_free(&tim);
+        free(fb.rgb); free(fb.z);
+        return 0;
+    }
     /* ---- locate inputs: explicit path > cwd > input/ ----
      * v33.8: the CAMDAT resolves FIRST and its FIRST MODEL's GLB is the
      * default scene. The old order always booted THRF9FD.glb (the town
@@ -20531,27 +20553,6 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
-    }
-
-    /* ---- optional standalone TIM viewer ---- */
-    if (timFile) {
-        TimImage tim;
-        if (!tim_load(&tim, timFile)) {
-            fprintf(stderr, "cannot load TIM %s\n", timFile);
-            return 1;
-        }
-        printf("TIM %s: %dx%d, %d palettes\n", timFile, tim.w, tim.h, tim.clutCount);
-        Frame fb; frame_alloc(&fb, w, h);
-        blit_tim(&fb, &tim, timPalette);
-        char out[1024];
-        ensure_dir_simple(outdir);
-        snprintf(out, sizeof(out), "%s/tim_p%02d_%dx%d.png", outdir, timPalette, tim.w, tim.h);
-        if (!write_png_rgb(out, fb.rgb, fb.w, fb.h)) return 1;
-        printf("wrote %s\n", out);
-        if (timView >= 0) { /* V45 E-5: DEAD — N parsed but never applied; NOT a palette selector (blit_tim used only timPalette) */ }
-        tim_free(&tim);
-        free(fb.rgb); free(fb.z);
-        return 0;
     }
 
     /* ---- load the scene DIRECTLY from the GLB ---- */
