@@ -140,7 +140,10 @@ send('{"Type":8}')                                  # resume
 time.sleep(1)
 send('{"Type":5}')                                  # close
 try:
-    p.stdin.close()   # EOF like the real parent (the C# app closes on exit)
+    # EOF after close (the C# panel never closes stdin itself — Dispose()
+    # kills the process; EOF here just proves the stdin thread exits
+    # cleanly when the host does close the pipe, e.g. a console Ctrl-C)
+    p.stdin.close()
 except Exception:
     pass
 
