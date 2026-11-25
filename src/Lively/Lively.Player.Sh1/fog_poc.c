@@ -185,6 +185,22 @@ static void ensure_dir_simple(const char *d) {
     mkdir(d, 0777);
 #endif
 }
+
+/* v8-audit (D1-1): the outdir-prefix skip must recognize EVERY absolute
+ * form the CLI can receive — POSIX '/', and on Windows the drive-letter
+ * ('C:\x', 'C:/x') and UNC ('\\\\server\\share\\x') roots too; the
+ * previous '=='/'-only test still prefixed Windows absolutes
+ * ("shots/C:\\x.png") and the write failed. */
+static int cli_path_is_abs(const char *f)
+{
+    if (!f || !f[0]) return 0;
+    if (f[0] == '/') return 1;
+#ifdef _WIN32
+    if (f[0] == '\\') return 1;
+    if (((f[0] >= 'A' && f[0] <= 'Z') || (f[0] >= 'a' && f[0] <= 'z')) && f[1] == ':') return 1;
+#endif
+    return 0;
+}
 static void ensure_parent_dir(const char *path) {
     char buf[512];
     if (strlen(path) >= sizeof buf) return;
@@ -811,7 +827,11 @@ static uint8_t *png_decode_rgba(const uint8_t *d, size_t n, int *wOut, int *hOut
                        ((uint32_t)d[p+2] << 8) | d[p+3];
         const char *typ = (const char *)d + p + 4;
         const uint8_t *data = d + p + 8;
-        if (p + 8 + (size_t)len + 4 > n) return NULL;
+        /* v48 (PNG-1): a chunk whose declared length runs past the buffer
+         * early-returns — but idat (the heap buffer accumulated from any
+         * prior IDAT chunks) was NOT freed on this path (every other
+         * failure path frees it); free it here like the rest. */
+        if (p + 8 + (size_t)len + 4 > n) { free(idat); return NULL; }
         if (!memcmp(typ, "IHDR", 4) && len >= 13) {
             w = (int)(((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
                       ((uint32_t)data[2] << 8) | data[3]);
@@ -841,6 +861,15 @@ static uint8_t *png_decode_rgba(const uint8_t *d, size_t n, int *wOut, int *hOut
     if (!idat || w <= 0 || h <= 0 || interlace != 0 || depth != 8) { free(idat); return NULL; }
     int channels = ctype == 6 ? 4 : ctype == 2 ? 3 : ctype == 3 ? 1 : ctype == 0 ? 1 : ctype == 4 ? 2 : -1;
     if (channels < 0) { free(idat); return NULL; }
+    /* v48 (PNG-2): color-type-3 (palette) without a usable PLTE — palN 0
+     * (chunk missing, or shorter than one RGB entry) — used to decode
+     * "successfully" with palette[idx*3..] read UNINITIALIZED (the
+     * idx >= palN clamp routes every index to palette[0..2], stack
+     * garbage painted as the texture). A paletted image without a
+     * palette is spec-invalid; fail the decode like the other
+     * invalid-PNG cases. (palN >= 1 keeps the clamp: palette[0..2] is
+     * then initialized.) */
+    if (ctype == 3 && palN == 0) { free(idat); return NULL; }
 
     size_t rawN = 0;
     uint8_t *raw = inflate_zlib(idat, idatN, &rawN);
@@ -3595,9 +3624,17 @@ static int camdat_load_track(const JValue *raw, CamTrack *t) {
          * format itself stores only arcMinDeg/arcMaxDeg — trackToJSON never
          * writes an "arcBounds" field):
          *   arcBounds = raw.arcMinDeg != null && raw.arcMaxDeg != null &&
-         *               num(raw.arcMaxDeg, 1) > num(raw.arcMinDeg, 0)      */
-        t->arcBounds = jget(raw, "arcMinDeg") != NULL &&
-                       jget(raw, "arcMaxDeg") != NULL &&
+         *               num(raw.arcMaxDeg, 1) > num(raw.arcMinDeg, 0)
+         * v48 audit (A18-1): the JS `!= null` gate rejects an EXPLICIT JSON
+         * null too (camtrack.html:6621; the Java twin CamtrackDoc.java:1382
+         * `if (mn == null || mx == null) return false;` likewise), but the C
+         * presence gate jget()!=NULL passes a JV_NULL node through — so
+         * {"arcMinDeg": null, "arcMaxDeg": null} parsed as arcBounds=TRUE
+         * with the -90/90 defaults (bounded/ricochet) here while the editor
+         * and the Java twin give false (free rotation). A key must be present
+         * AND non-null to count. */
+        t->arcBounds = jget(raw, "arcMinDeg") != NULL && jget(raw, "arcMinDeg")->type != JV_NULL &&
+                       jget(raw, "arcMaxDeg") != NULL && jget(raw, "arcMaxDeg")->type != JV_NULL &&
                        jnum(raw, "arcMaxDeg", 1.0) > jnum(raw, "arcMinDeg", 0.0);
         t->arcMinDeg = (float)jnum(raw, "arcMinDeg", -90.0);
         t->arcMaxDeg = (float)jnum(raw, "arcMaxDeg", 90.0);
@@ -3699,12 +3736,15 @@ static int camdat_load_track(const JValue *raw, CamTrack *t) {
         t->pitchSpeedDegS = (float)jnum(raw, "pitchSpeedDegS", 0.0);
         /* sanitizeTrack reconstruction (same rule as the circle arc):
          *   yawBounds = raw.yawMinDeg != null && raw.yawMaxDeg != null &&
-         *               num(raw.yawMaxDeg, 1) > num(raw.yawMinDeg, 0)       */
-        t->yawBounds = jget(raw, "yawMinDeg") != NULL &&
-                       jget(raw, "yawMaxDeg") != NULL &&
+         *               num(raw.yawMaxDeg, 1) > num(raw.yawMinDeg, 0)
+         * v48 audit (A18-1): the JS `!= null` gate (camtrack.html:6767) also
+         * rejects an explicit JSON null — see the arcBounds note above. */
+        t->yawBounds = jget(raw, "yawMinDeg") != NULL && jget(raw, "yawMinDeg")->type != JV_NULL &&
+                       jget(raw, "yawMaxDeg") != NULL && jget(raw, "yawMaxDeg")->type != JV_NULL &&
                        jnum(raw, "yawMaxDeg", 1.0) > jnum(raw, "yawMinDeg", 0.0);
-        t->pitchBounds = jget(raw, "pitchMinDeg") != NULL &&
-                         jget(raw, "pitchMaxDeg") != NULL &&
+        /* camtrack.html:6769 — same `!= null` semantics for the pitch pair. */
+        t->pitchBounds = jget(raw, "pitchMinDeg") != NULL && jget(raw, "pitchMinDeg")->type != JV_NULL &&
+                         jget(raw, "pitchMaxDeg") != NULL && jget(raw, "pitchMaxDeg")->type != JV_NULL &&
                          jnum(raw, "pitchMaxDeg", 1.0) > jnum(raw, "pitchMinDeg", 0.0);
         t->yawMinDeg = (float)jnum(raw, "yawMinDeg", -45.0);
         t->yawMaxDeg = (float)jnum(raw, "yawMaxDeg", 45.0);
@@ -6322,7 +6362,9 @@ static void sh_env_update_pose(ShEnv *env, v3 camPos, Quat camQ) {
          * pipeline's single-step equivalent). PR #235's original form
          * (trunc(wp*256)<<4 for ALL modes) was rejected: it quantized
          * the NULL-branch analog AND trunc(w*256) != (trunc(w*4096)>>4)
-         * for negative w whose trunc(w*4096) is an exact multiple of 16. */
+         * for negative w whose trunc(w*4096) is NOT an exact
+         * multiple of 16 (w*4096 = -6143.5: trunc(-383.96875)<<4 = -6128
+         * vs -6143>>4<<4 = -6144; at exact multiples the two agree). */
         if (g_userLightMode == 1) {
             L->pos[0] = (int)(wp[0] * 4096.0f);
             L->pos[1] = (int)(wp[1] * 4096.0f);
@@ -6380,9 +6422,10 @@ static void sh_env_update_pose(ShEnv *env, v3 camPos, Quat camQ) {
 
 static void sh_env_tick(ShEnv *env, int dtQ12, v3 camPos, Quat camQ) {
     /* v49: the LINE light's travel clock — the camtrack twin rides
-     * state.t, which advances EXACTLY 1/30 s per fired tick (tickPlayback
-     * :8532; the PoC's own playback advances play.t by exactly 1.0/30.0
-     * per tick, live_advance). SHENV_DT30 (136) is the Q12-TRUNCATED
+     * state.t, its FRAME clock (t += min(dt,0.1)*rate, tickPlayback
+     * camtrack.html:8540-8544 — the light phase is a pure function of
+     * it; rate != 1 scales it). The PoC's own playback advances play.t
+     * by exactly 1.0/30.0 per tick (live_advance). SHENV_DT30 (136) is the Q12-TRUNCATED
      * engine dt = 255/256 of the real tick — accumulating it left the
      * travel 1 tick behind every 256 (v49-audit A2-2). Advance the exact
      * tick dt; frozen when paused (no ticks fire) exactly like the
@@ -7412,6 +7455,19 @@ static int g_bootWeatherTarget = -1;
  * with the same seed the fresh boot's final snow_reset_seed uses, else
  * --snow-seed N restart != fresh. */
 static unsigned g_bootSnowSeed = SNOW_SEED_DEFAULT;
+/* V48 audit A23-F1: the resolved BOOT weather recipe — weatherBits (E0CB0)
+ * exactly as the boot left it (CLI --weather > the camdat env boot > the
+ * GLB room field_17 > the map0 default). The K_R restart must re-sync the
+ * transition state from THIS, not the live weatherBits: the W key's
+ * runtime event re-packs weatherBits (particle_environment_set(2, 127),
+ * the map6_s00.c:184 recipe; E0CB0 re-packed at particle.c:3811 and
+ * 3815-3820), so after a W press the live bits are the recipe-2 snow
+ * packing, not the boot recipe. The engine's room reload never sees a
+ * mutated recipe — every map load re-derives E0CB0 from the map header
+ * (GameBoot_WorldEnvInit, load_screen.c:36:
+ * particleEnviromentSet(field_17, field_16)); the stash is the PoC's
+ * restart==fresh-session equivalent. */
+static uint32_t g_bootWeatherBits = 0;
 static int sh_particle_weather_target_set(Snow *S, int arg0) {
     if (!S->transitionLock) {
         /* engine line 3946: `return false` — the whole body is skipped */
@@ -7695,6 +7751,20 @@ static void snow_reset_seed(Snow *S, unsigned seed) {
     S->lastTickT = 0.0;
     S->prevX = 0; S->prevZ = 0;        /* g_Particle_PrevPosition at load   */
     S->prevYawQ12 = 0;                 /* PrevRotationY (BSS 0 at load)     */
+    /* v48 audit (A3-1): g_WeatherParticle_Vectors1 is BSS 0 at a fresh
+     * process boot (particle.c:45-46 ".bss data in maps we've matched .bss
+     * for") and its ONLY writer is the SystemUpdate tail
+     * (particle.c:638 `g_WeatherParticle_Vectors1 = g_WeatherParticle_Vectors0;`)
+     * — so a fresh session's FIRST rain tick computes the case-1 delta as
+     * (0 - viewPosition) (particle.c:3274-3275), teleporting the bank by the
+     * full view position. The seek/backward-jump re-sim (snow_sync_live ->
+     * snow_reset -> here) models "a fresh session from the fixed seed" but
+     * kept the PRE-JUMP prevViewX/Z, so its first re-sim tick applied the
+     * small inter-tick camera delta instead — the re-sim diverged from the
+     * fresh-boot replay it must reproduce. Zero it here so EVERY
+     * fresh-session re-seed (seek, K_R, K_B, K_W, boot) gets the BSS-zero
+     * first tick. */
+    S->prevViewX = 0; S->prevViewZ = 0; /* g_WeatherParticle_Vectors1 (BSS 0) */
     S->boxX  = 0; S->boxZ = 0;
     S->camMoved = 0;
 }
@@ -8536,12 +8606,29 @@ static void raster_tri(Frame *fb, const RVert *vA, const RVert *vB, const RVert 
                  * the opaque path runs through fb_put.                             */
                 const uint8_t *bg = fb->rgb + pi * 3;
                 if (quantize) {
-                    int f5r = quantize8((((tr >> 3) * vr) >> 4) + orr, dither, x, y) >> 3;
-                    int f5g = quantize8((((tg >> 3) * vg) >> 4) + og, dither, x, y) >> 3;
-                    int f5b = quantize8((((tb >> 3) * vb) >> 4) + ob, dither, x, y) >> 3;
-                    int or5 = (bg[0] >> 3) + f5r; if (or5 > 31) or5 = 31;
-                    int og5 = (bg[1] >> 3) + f5g; if (og5 > 31) og5 = 31;
-                    int ob5 = (bg[2] >> 3) + f5b; if (ob5 > 31) ob5 = 31;
+                    /* v48 (A-3): the V45 C2-1 per-prim dither form — the
+                     * engine draws the veil quad and the textured GT4 as
+                     * TWO prims, each through its own dither LUT pass
+                     * (gpu_sw_backend.cpp:136-139 textured, :148-150 flat
+                     * G4), THEN the ABR-1 saturating 5-bit add
+                     * (:170-178). The old form fused F8+V8 through ONE
+                     * quantize8 — the dither counted once instead of
+                     * twice and the 8-bit pre->>3 sum leaked low bits
+                     * (+1/31 on 43.75% of residue pairs) — the exact
+                     * class V45 fixed in the STP-clear sub-branch and
+                     * the opaque fall-through (the two-step pattern at
+                     * 8449-8460). Saturation is monotone, so
+                     * min(31, B5+V5+F5) == the engine's two-prim
+                     * min(31, min(31, B5+V5) + F5).                        */
+                    int f5r = quantize8(((tr >> 3) * vr) >> 4, dither, x, y) >> 3;
+                    int f5g = quantize8(((tg >> 3) * vg) >> 4, dither, x, y) >> 3;
+                    int f5b = quantize8(((tb >> 3) * vb) >> 4, dither, x, y) >> 3;
+                    int v5r = quantize8(orr, dither, x, y) >> 3;
+                    int v5g = quantize8(og, dither, x, y) >> 3;
+                    int v5b = quantize8(ob, dither, x, y) >> 3;
+                    int or5 = (bg[0] >> 3) + f5r + v5r; if (or5 > 31) or5 = 31;
+                    int og5 = (bg[1] >> 3) + f5g + v5g; if (og5 > 31) og5 = 31;
+                    int ob5 = (bg[2] >> 3) + f5b + v5b; if (ob5 > 31) ob5 = 31;
                     uint8_t *dp = fb->rgb + pi * 3;
                     dp[0] = (uint8_t)((or5 << 3) | (or5 >> 2));
                     dp[1] = (uint8_t)((og5 << 3) | (og5 >> 2));
@@ -9320,7 +9407,8 @@ static void transform_item2(const Renderer *R, const DrawItem *it,
                  * func_80057658 (enum-1): world delta Q8 (s16) + engine-frame
                  * normal (into-surface: NEGATED glTF normal, s8 127 = 1.0, <<5)
                  * func_80057A3C (enum-2): the same normals + the light vector
-                 *   (field_28) through the engine's gte_ll (MVMMA FC bug)   */
+                 *   (field_28) through the engine's gte_ll (MVMVA LLM
+                 *   cv=3 tx=NONE — full 3-term dot, zero_T)             */
                 float wx = M->m[0]*x + M->m[4]*y + M->m[8]*z  + M->m[12];
                 float wy = M->m[1]*x + M->m[5]*y + M->m[9]*z  + M->m[13];
                 float wz = M->m[2]*x + M->m[6]*y + M->m[10]*z + M->m[14];
@@ -10954,6 +11042,31 @@ static void sh1x_anims_tick(Sh1x *sx, double dt, const v3 *camGltf) {
         }
     }
     const int dtRaw = (int)(dt * 4096.0);
+    /* v48 (A16-4): the engine's ride block is an ELSE-IF chain
+     * (map6_s04_2.c:3493-3508): when the FERRIS rect matches
+     * (!Get(452) && PLAYER_NEAR_POS(vx,8,20) && PLAYER_NEAR_POS(vz,-28,22)
+     * && AABB) the LISSAJOUS update is SKIPPED that frame — and vice
+     * versa. The port ticked both rides independently, so inside the
+     * rects' overlap strip (engine vx in (-12,4) AND vz in (-50,-44), a
+     * ~16x6 m band) it advanced BOTH rides where the engine advances
+     * only the ferris. Pre-scan: did any ferris (driver 14) pass its
+     * full gate set this tick (event gate + rect)? */
+    int ferrisFired = 0;
+    for (int i = 0; i < sx->nAnims && !ferrisFired; i++) {
+        const Sh1xPropAnim *fa = &sx->anims[i];
+        if (fa->driver != 14 || !anim_gate_on(sx, fa)) continue;
+        /* mirror the main loop's dgNear contract: the rect freeze only
+         * applies when BOTH dgNear is set AND the camera is known —
+         * otherwise the ferris updates unconditionally and fires. */
+        if (!fa->dgNear || !camGltf) { ferrisFired = 1; break; }
+        int exq = (int)(camGltf->x * 4096.0f);
+        int ezq = (int)(-camGltf->z * 4096.0f);
+        int dx = exq - fa->dgBaseXQ12;
+        int dz = ezq - fa->dgBaseZQ12;
+        int nearX = (dx >= 0) ? (dx < fa->dgTolXQ12) : (-dx < fa->dgTolXQ12);
+        int nearZ = (dz >= 0) ? (dz < fa->dgTolZQ12) : (-dz < fa->dgTolZQ12);
+        if (nearX && nearZ) ferrisFired = 1;
+    }
     for (int i = 0; i < sx->nAnims; i++) {
         Sh1xPropAnim *a = &sx->anims[i];
         a->gated = !anim_gate_on(sx, a);
@@ -10971,6 +11084,10 @@ static void sh1x_anims_tick(Sh1x *sx, double dt, const v3 *camGltf) {
             continue;        /* engine: the update loop is gated */
         }
         if (a->sharedLeader >= 0) continue;  /* follower: leader's state */
+        /* v48 (A16-4): the engine's else-if — when the ferris branch
+         * ran this frame the lissajous update does not run at all
+         * (its angle D_800EBB36 freezes, exactly like the rect miss). */
+        if (a->driver == 15 && ferrisFired) continue;
         /* v44 (C-6): the driveGate proximity freeze. The engine runs the
          * ferris/lissajous update ONLY inside its two PLAYER_NEAR_POS
          * rects (map6_s04_2.c:3493-3508 — ferris |vx-8|<20 ∧ |vz+28|<22,
@@ -11139,8 +11256,17 @@ static void sh1x_anims_tick(Sh1x *sx, double dt, const v3 *camGltf) {
                     if (t == 1 || t == -1) a->rawVel = 0;
                 }
                 if (a->rawVel == 0 && a->kickPhase == 1) {
-                    a->rawVy = a->rawSettle;    /* rest: Q12_ANGLE(-157.4) */
+                    /* v48 (A16-3): the engine sets flag 106 on the frame
+                     * the halving ends (map1_s03.c:1977-1988) but applies
+                     * the settle pose vy = Q12_ANGLE(-157.4f) only on the
+                     * NEXT frame via the else-if flag branch (:1992-1996).
+                     * The old form snapped in the SAME step — one frame
+                     * early. Phase 2 now applies the settle one step
+                     * later, matching the engine's frame N / N+1 split. */
                     a->kickPhase = 2;
+                } else if (a->rawVel == 0 && a->kickPhase == 2) {
+                    a->rawVy = a->rawSettle;    /* rest: Q12_ANGLE(-157.4) */
+                    a->kickPhase = 3;
                 }
             }
             break;
@@ -11478,7 +11604,14 @@ n                    * STONE3_H — NOT ported: one GLB model per entry);
             switch (a->stoneStep) {
             case 0:
                 a->stoneStep = 1;                     /* sfx 1647 kick  */
-                break;
+                /* v48 (A16-1): the engine's case 0 has NO break
+                 * (map7_s01_2.c:1488-1493): Sfx_WithFlagsPlay +
+                 * SysWork_StateStepIncrement(1) fall STRAIGHT into
+                 * case 1's slide accumulation — the kick tick ALSO
+                 * advances the slide. The old break burned the whole
+                 * first tick on the marker alone (slide started one
+                 * 30Hz tick late). */
+                /* fall through */
             case 1: {
                 a->stoneData += dtRaw;
                 if (a->stoneData > 8192) a->stoneData = 8192; /* Q12(2.0) */
@@ -11553,9 +11686,16 @@ n                    * STONE3_H — NOT ported: one GLB model per entry);
                 a->fallArmed = 1;      /* D_800F482C = Q12_ANGLE(-167.6) */
                 a->binAng = -1906;    /* = -1906 raw                    */
             }
+            /* v48 (A16-2): the engine order is POSE-THEN-DECREMENT
+             * (map7_s03_3.c:8200-8202): Math_SetSVectorFast(rot,
+             * D_800F482C,...) poses with the CURRENT accumulator,
+             * WorldObjects_Add, and only THEN D_800F482C -=
+             * Q12_DIV(dt, Q12(3.6)). The old decrement-first form drew
+             * the engine's NEXT frame every tick (a constant one-frame
+             * ~3.33 deg lead) and never drew the initial -1906 pose. */
+            a->cur[0] = (float)a->binAng * (360.0f / 4096.0f);
             a->binAng -= (int)(((int64_t)dtRaw << 12) / 14745);
             if (a->binAng < -32768) a->binAng += 65536; /* SVECTOR vy s16 */
-            a->cur[0] = (float)a->binAng * (360.0f / 4096.0f);
             break;
         }
         case 20: { /* scrollBelt — map7_s03_3.c:8296-8355 VERBATIM (the
@@ -14098,7 +14238,19 @@ static int sh_tvpaint_collect(const Sh1x *sx, const mat4 *viewProj,
             int u1 = a->tvU[si] + sty->u0 + a->tvR2[si] + sty->du - 1;
             int v0 = a->tvV[si] + sty->v0 + a->tvR3[si];
             int v1 = v0 + sty->dv - 1;
-            u0 &= 0xFF; u1 &= 0xFF; v0 &= 0xFF; v1 &= 0xFF;
+            /* v48 (A-2): NO early &0xFF wrap here. The engine keeps the RAW
+             * sums in the u16 fields (map4_s03.c:1258-1259 sp30[][].field_8/
+             * field_A; the corner stores at :1330-1344 are the UNWRAPPED
+             * s32 sums temp_s6/spB0/temp_s4/var_t0), interpolates the
+             * midpoints on those raw u16s ((a+b)>>1, :1349/:1355/...), and
+             * only TRUNCATES to u8 at setUV4 (:1396-1400). Wrapping before
+             * the >>1 midpoints (the old form) gives ((A&0xFF)+(B&0xFF))>>1
+             * where the engine gives ((A+B)>>1)&0xFF — different whenever a
+             * window crosses 255 (e.g. v corners 202/256: engine mid 229,
+             * old form 101 — the big screen's mid row/col UVs, live in the
+             * func_800D8620 case-4/case-5 sub-states whose v ramps cross
+             * 0/256). The &0xFF now happens at each consumption point
+             * below (the setUV4-equivalent sites). */
             /* the corners (func_800D761C's cross-wiring): c0 = A,
              * c1 = (B.x, A.y, B.z), c2 = (A.x, B.y, A.z), c3 = B.
              * World = anchor(engine Q12 m) + corner(Q8)/256, glTF map
@@ -14212,19 +14364,29 @@ static int sh_tvpaint_collect(const Sh1x *sx, const mat4 *viewProj,
                             o->sx = (float)(*gxq) * R->enginePixScale;
                             o->sy = (float)(*gyq) * R->enginePixScaleY;
                             o->z  = *gzq;
-                            o->u  = (float)(*guq) / 256.0f;
-                            o->v  = (float)(*gvq) / 256.0f;
+                            o->u  = (float)(*guq & 0xFF) / 256.0f;
+                            o->v  = (float)(*gvq & 0xFF) / 256.0f;
                             o->vcol[0] = o->vcol[1] = o->vcol[2] = var_s2;
                             o->ocol[0] = o->ocol[1] = o->ocol[2] = 0;
                         }
                         q->tex = tex;
                         q->bright = var_s2;
-                        /* the sub-quad OTZ: MAX corner SZ (Q8) >> 3.
-                         * V44 (D-3): the corner SZ is RotTransPers()<<2
-                         * (map4_s03.c:1292) — truncates, no +0.5            */
+                        /* the sub-quad OTZ: MAX corner SZ (Q8), each corner
+                         * scaled <<2 like the engine's
+                         * `sp10[i].vz = RotTransPers(...) * 4`
+                         * (map4_s03.c:1292) BEFORE the MAX, then `>> 3`
+                         * (:1297-1300) — so the TV paint's bucket is
+                         * (Q8<<2)>>3 = Q8>>1, 4x the mesh scale (the mesh
+                         * walk is (OTZ>>1)>>2 = Q8>>3, bodyprog_80056D8C.c
+                         * :855): the engine deliberately sorts the TV
+                         * paint 4x NEARER than all mesh geometry so it
+                         * covers its own wall and culls past ~16 m.
+                         * V44 (D-3): truncates, no +0.5. The v48 form
+                         * dropped the <<2 — bucket Q8>>3 culls at ~64 m
+                         * and ties against the wall's own mesh bucket. */
                         float zm = fmaxf(fmaxf(q->v[0].z, q->v[1].z),
                                          fmaxf(q->v[2].z, q->v[3].z));
-                        int bucket = (int)floorf(zm * 256.0f) >> 3;
+                        int bucket = ((int)floorf(zm * 256.0f) * 4) >> 3;
                         if (!(bucket > 0 && bucket < 2047)) continue;
                         PostEnt pe;
                         memset(&pe, 0, sizeof(pe));
@@ -14240,14 +14402,18 @@ static int sh_tvpaint_collect(const Sh1x *sx, const mat4 *viewProj,
                 TvQuad *q = &tvq[(*nTvq)++];
                 for (int c = 0; c < 4; c++) {
                     q->v[c] = rv[c];
-                    q->v[c].u = (float)(c == 1 || c == 3 ? u1 : u0) / 256.0f;
-                    q->v[c].v = (float)(c >= 2 ? v1 : v0) / 256.0f;
+                    /* setUV4's u8 truncation (func_800D88C8:1396-1400) */
+                    q->v[c].u = (float)((c == 1 || c == 3 ? u1 : u0) & 0xFF) / 256.0f;
+                    q->v[c].v = (float)((c >= 2 ? v1 : v0) & 0xFF) / 256.0f;
                 }
                 q->tex = tex;
                 q->bright = var_s2;
                 float zm = fmaxf(fmaxf(rv[0].z, rv[1].z),
                                  fmaxf(rv[2].z, rv[3].z));
-                int bucket = (int)floorf(zm * 256.0f) >> 3;  /* V44 D-3: SZ truncates */
+                /* V44 (D-3): SZ truncates; the *4<<2 scale is the engine's
+                 * `RotTransPers(...) * 4` (map4_s03.c:1292) — see the
+                 * big-screen comment above (v48: the <<2 was dropped). */
+                int bucket = ((int)floorf(zm * 256.0f) * 4) >> 3;
                 if (!(bucket > 0 && bucket < 2047)) {
                     (*nTvq)--;               /* the engine drops this quad */
                     continue;
@@ -16078,12 +16244,42 @@ static void r2view_tick(R2View *V, const CamPose *body) {
         V->selfViewTimer += R2_DT_Q12;
 
         /* --- ideal camera position (vcMakeIdealCamPosByHeadPos,
-         * extraViewMode ON branch; engine y-down +0.07 -> y-up -0.07)   */
+         * extraViewMode ON branch; engine y-down +0.07 -> y-up -0.07).
+         * v48 (A22-F3): the ENTRY tick takes the WARP_WATCH branch —
+         * vcSetFlagsByCamMvType sets VC_WARP_WATCH_F on the press edge
+         * (vc_main.c:769-786, extraViewMode-gated) alongside the every-
+         * tick VC_WARP_CAM_F|VC_WARP_CAM_TGT_F (:761), and the ideal
+         * builder's FIRST branch is
+         *   if (w_p->flags & VC_WARP_WATCH_F) {
+         *       ideal_pos->vx = w_p->chara_pos.vx;   root xz
+         *       ideal_pos->vy = w_p->chara_top_y;    top height
+         *       ideal_pos->vz = w_p->chara_pos.vz;
+         *       return;  }                 (vc_main.c:1929-1935)
+         * the character ROOT xz at the TOP height (top = root + 1.7m:
+         * hero_top_y = position.vy + Q12(-1.7f), vc_util.c:132) — NO
+         * 0.18m head offset, NO 140deg, NO 0.07 y. WARP_CAM/CAM_TGT then
+         * glue camPos/camTgt to it for this tick (vcRenewalCamData,
+         * vc_main.c:2565-2572), so the entry-tick watch pipeline
+         * (vcMixSelfViewEffectToWatchTgtPos reads cam_pos, vc_main.c:
+         * 1509-1511) and the WARP_WATCH angle snap below all run from
+         * this first-person-at-the-top position; the flag clears at the
+         * end of the tick (vc_main.c:360) and the camera moves to
+         * head+0.18m@140deg from tick 2. In this PoC's camera-stands-in-
+         * for-player model the anchor IS the head/top and the root xz
+         * equals the anchor xz (the farWatch mapping below models
+         * chara_pos.xz == head.xz), so the warp position is the anchor
+         * itself.                                                        */
         int32_t camAng = eyeYaw + R2_HEAD_ANG;
         int32_t ideal[3];
-        ideal[0] = head[0] + R2_MUL(sh_math_sin(camAng), R2_HEAD_DIST);
-        ideal[2] = head[2] + R2_MUL(sh_math_cos(camAng), R2_HEAD_DIST);
-        ideal[1] = head[1] - R2_HEAD_Y;
+        if (edge) {
+            ideal[0] = head[0];
+            ideal[1] = head[1];
+            ideal[2] = head[2];
+        } else {
+            ideal[0] = head[0] + R2_MUL(sh_math_sin(camAng), R2_HEAD_DIST);
+            ideal[2] = head[2] + R2_MUL(sh_math_cos(camAng), R2_HEAD_DIST);
+            ideal[1] = head[1] - R2_HEAD_Y;
+        }
 
         /* SELF_VIEW sets WARP_CAM/CAM_TGT every tick: hard glue         */
         V->camPos[0] = V->camTgt[0] = ideal[0];
@@ -17183,11 +17379,23 @@ static int live_action(LiveApp *A, LiveKey k, int down) {
          * cross-fade (the W key / --weather-target) was carried deeper
          * into the restarted session than any fresh boot — the engine
          * reload DROPS the transition and re-syncs to the room recipe
-         * (the map event re-arms D0B18 as scripted). weatherBits is the
-         * boot recipe and nothing mutates it during a session, so this
-         * re-sync also restores the fresh boot's current==target.       */
+         * (the map event re-arms D0B18 as scripted).
+         * v48 (A23-F1): the re-sync reads the STASHED BOOT recipe
+         * (g_bootWeatherBits), not the live weatherBits — the old comment
+         * claimed "weatherBits is the boot recipe and nothing mutates it
+         * during a session", which is FALSE: the W key's runtime event
+         * re-packs it (particle_environment_set(2, 127) — the map6_s00.c:184
+         * recipe; E0CB0 re-packed at particle.c:3811/3815-3820), so a
+         * W-then-R restart re-synced current/target/settings to the
+         * recipe-2 SNOW packing where a fresh session boots the original
+         * recipe (boot --weather 5 rain + W + R booted SNOW). The engine's
+         * reload never inherits a mutated recipe — every map load
+         * re-derives E0CB0 from the header (load_screen.c:36). The
+         * register itself is restored too, so the post-restart state
+         * equals the fresh boot's for any later reader.                 */
         A->snow.weatherTick = 0;
         A->snow.transitionLock = 1;
+        A->snow.weatherBits = g_bootWeatherBits;
         A->snow.weatherCurrent = A->snow.weatherBits;
         A->snow.weatherTarget = A->snow.weatherBits;
         A->snow.weatherSettings = (uint16_t)(A->snow.weatherBits >> 12);
@@ -17243,9 +17451,11 @@ static int live_action(LiveApp *A, LiveKey k, int down) {
          * view position, so the first post-restart rain tick applied a
          * small inter-tick camera delta where a fresh boot teleports
          * the bank by the full view position (312 px at --duration 3;
-         * --nosnow is md5-identical). */
-        A->snow.prevViewX = 0;
-        A->snow.prevViewZ = 0;
+         * --nosnow is md5-identical).
+         * v48 audit (A3-1): the zeroing moved INTO snow_reset_seed (the
+         * seek/backward-jump re-sim needed the same fresh-session first
+         * tick and had no site of its own) — the re-seed below restores
+         * it, so the explicit pair this block used to carry is gone. */
         /* V45 audit W7: re-seed with the BOOT seed, not the default — the
          * fresh boot's final warm-up runs snow_reset_seed(&A.snow,
          * snowSeed) (the v41-ENGFX bug 2 site), so --snow-seed N must
@@ -21167,6 +21377,7 @@ int main(int argc, char **argv) {
      * calls D0B18(6) — its snow->rain street event). */
     g_bootWeatherTarget = bootWeatherTarget;   /* V42 D-1: for the K_R re-arm */
     g_bootSnowSeed = snowSeed;                 /* V45 audit W7: same for the seed */
+    g_bootWeatherBits = A.snow.weatherBits;    /* V48 A23-F1: the boot recipe for K_R */
     #ifdef LIVELY_PLAYER
     g_lp_boot_weather_target = bootWeatherTarget;  /* S20 F5: kept for the switch re-arm */
 #endif
@@ -21415,7 +21626,8 @@ int main(int argc, char **argv) {
                    Vr.effRate, (double)Vr.selfViewTimer / 4096.0);
         }
         char out[1024];
-        snprintf(out, sizeof(out), "%s/%s", outdir, r2Shot.file);
+        if (cli_path_is_abs(r2Shot.file)) snprintf(out, sizeof(out), "%s", r2Shot.file);
+        else snprintf(out, sizeof(out), "%s/%s", outdir, r2Shot.file);
         ensure_dir_simple(outdir);
         if (!write_png_rgb(out, fb2.rgb, fb2.w, fb2.h)) {
             fprintf(stderr, "failed to write %s\n", out); return 1;
@@ -21583,7 +21795,8 @@ int main(int argc, char **argv) {
         sh1x_anims_sync((Sh1x *)&R.sc->sh1x, tSim, &cp.pos); /* v43: hold at the final session time (the in-loop call is post-advance, live parity; the V44 C-6 3rd arg kept) */
         render_frame(&fb, &R, &cp);
         char out[1024];
-        snprintf(out, sizeof(out), "%s/%s", outdir, shots[i].file);
+        if (cli_path_is_abs(shots[i].file)) snprintf(out, sizeof(out), "%s", shots[i].file);
+        else snprintf(out, sizeof(out), "%s/%s", outdir, shots[i].file);
         ensure_dir_simple(outdir);
         if (!write_png_rgb(out, fb.rgb, fb.w, fb.h)) {
             fprintf(stderr, "failed to write %s\n", out); return 1;
