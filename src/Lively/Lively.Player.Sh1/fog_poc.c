@@ -16290,6 +16290,20 @@ static CamPose r2view_pose(const R2View *V, const CamPose *body) {
 }
 
 /* ==================================================================== */
+
+/* w8-audit (D5-1): in LIVELY_PLAYER builds stdout IS the JSON IPC wire
+ * (the C# host tolerates non-JSON lines by logging them, but the seam's
+ * own contract — see the printf-silencing reroute — is a CLEAN wire).
+ * The live_* helpers sit ABOVE the old macro position, so their printf
+ * chatter compiled ACTIVE: lp_wndproc routes the light keys straight
+ * into user_light_nudge/user_light_aim, whose "[userlight]" printfs (and
+ * the [env]/[r2view] peers on the live paths) hit the pipe. Silence
+ * printf from the top of the live helper region in LIVELY builds only;
+ * the plain CLI's terminal output is untouched (LIVELY-only guard).   */
+#ifdef LIVELY_PLAYER
+#define printf(...) ((void)0)   /* chatter silenced; stderr untouched    */
+#endif
+
 /* REALTIME PREVIEW — live window, engine renderer driven by wall clock  */
 /*                                                                      */
 /*  Windows : native Win32 window + GDI StretchDIBits upscale.          */
@@ -18572,10 +18586,11 @@ static void lp_send_console(int error, const char *msg) {
     lp_ipc(line);
 }
 
-/* in LIVELY_PLAYER builds the engine's printf(...) chatter is REROUTED
- * away from stdout (the C# players keep stdout clean for the IPC wire;
- * Android's seam did the same to logcat). fprintf(stderr,...) stays.   */
-#define printf(...) ((void)0)   /* chatter silenced; stderr untouched    */
+/* in LIVELY_PLAYER builds the engine's printf(...) chatter is silenced
+ * — hoisted ABOVE the live_* helper region (w8-audit D5-1) so the
+ * userlight/env/r2view printfs there cannot pollute stdout either.
+ * The C# players keep stdout clean for the IPC wire; Android's seam did
+ * the same to logcat. fprintf(stderr,...) stays.                        */
 
 static const char *g_lp_glb_path = NULL;
 static const char *g_lp_camdat_path = NULL;
