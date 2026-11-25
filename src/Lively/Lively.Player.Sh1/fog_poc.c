@@ -18310,7 +18310,21 @@ typedef struct { int dummy; } PAINTSTRUCT;
 #define BeginPaint(h, ps) ((void)(h), memset((ps), 0, sizeof(PAINTSTRUCT)), (HDC)0)
 #define EndPaint(h, ps) ((void)(h), (void)(ps))
 #define DefWindowProcA(h, m, w, l) ((void)(h), (void)(m), (void)(w), (void)(l), 0L)
-#define _fgetchar getchar
+/* w8-audit (D6-2): getchar() takes stdin's FILE lock and HOLDS it across
+ * the blocking pipe read; after {"Type":5} (cmd_close) the main thread's
+ * exit-time stdio cleanup (glibc's _IO_cleanup locks every stream) then
+ * blocks on that lock — the process hangs until more stdin bytes or EOF
+ * arrive (empirically >10 s frozen; a raw-read falsifier build exits in
+ * 0.02 s). The ipc16 CI test masks it by closing stdin; a parent that
+ * waits without EOF hangs instead. lp_stdin_thread is the ONLY stdin
+ * consumer, so reading fd 0 raw — no FILE lock, no exit-time deadlock.
+ * NOTE (Windows, unproven here): ucrt's exit path locks FILEs the same
+ * way; if the Windows "Real-user IPC test" gate (which waits WITHOUT
+ * closing stdin) hangs after the TIM gate is fixed, swap this thread's
+ * getter to _getchar_nolock() there.                                          */
+#include <unistd.h>   /* read(2) — the lock-free stdin getter below        */
+static int lp_getc_raw(void) { unsigned char ch; return read(0, &ch, 1) == 1 ? (int)ch : EOF; }
+#define _fgetchar lp_getc_raw
 #define Sleep(ms) sleep_ms((unsigned)(ms))
 #define PostQuitMessage(x) ((void)(x))
 #define WM_CLOSE 0x0010
